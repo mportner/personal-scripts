@@ -312,6 +312,10 @@ fi
 
 # --- converge the managed rc block ------------------------------------------
 
+# The single quotes below are deliberate: "$PATH" has to reach the rc file as
+# the literal three characters, to be expanded by the shell that reads it, not
+# by this one.
+# shellcheck disable=SC2016
 managed_block() {
   printf '%s\n' "$BLOCK_BEGIN"
   printf 'case ":$PATH:" in\n'
@@ -371,14 +375,26 @@ fi
 
 case "$reply" in
   [yY]*)
-    if (( has_block )); then
+    # Back up before either kind of edit, not just the rewrite. Appending is
+    # the safer of the two, but "there is a .bak" should not depend on which
+    # path ran. Skipped only when there is no file yet to copy.
+    backup=''
+    if [[ -f "$SHELL_RC" ]]; then
       cp -p "$SHELL_RC" "$SHELL_RC.bak"
+      backup=" (backup at $SHELL_RC.bak)"
+    fi
 
-      # Temp file alongside the target so the mv is a same-filesystem rename,
-      # and the rc file is never left half-written.
+    if (( has_block )); then
+      # Temp files alongside the target so the mv is a same-filesystem rename,
+      # and the rc file is never left half-written. Both are created before the
+      # trap covers them, and the trap covers both: an awk failure under set -e
+      # exits between them, and the one not yet cleaned would otherwise be left
+      # behind.
+      tmp=''
+      block_file=''
+      trap 'rm -f "$tmp" "$block_file" 2>/dev/null || true' EXIT
+
       tmp="$(mktemp "$SHELL_RC.XXXXXX")"
-      trap 'rm -f "$tmp"' EXIT
-
       block_file="$(mktemp)"
       printf '%s\n' "$desired" > "$block_file"
 
@@ -402,17 +418,19 @@ case "$reply" in
       chmod "$(file_mode "$SHELL_RC")" "$tmp"
       mv "$tmp" "$SHELL_RC"
 
-      printf '    Updated %s (backup at %s.bak).\n' "$SHELL_RC" "$SHELL_RC"
+      printf '    Updated %s%s.\n' "$SHELL_RC" "$backup"
     else
       printf '\n' >> "$SHELL_RC"
       printf '%s\n' "$desired" >> "$SHELL_RC"
-      printf '    Appended to %s.\n' "$SHELL_RC"
+      printf '    Appended to %s%s.\n' "$SHELL_RC" "$backup"
     fi
     printf '    Run: source %s\n' "$SHELL_RC"
     ;;
   *)
     printf '\n    Not modified. Put the block above in %s yourself,\n' "$SHELL_RC"
     printf '    or apply it to the current shell only:\n\n'
+    # Literal "$PATH" again: this line is printed for the user to copy, not run.
+    # shellcheck disable=SC2016
     printf '        export PATH="%s:$PATH"\n' "$TARGET"
     for s in ${sources[@]+"${sources[@]}"}; do
       printf '        source "%s"\n' "$s"
