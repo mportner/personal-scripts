@@ -6,18 +6,23 @@
 #   files/home/.claude/statusline.sh              the status line script
 #   files/home/.claude-config-kit/settings.json   settings to merge in
 #
-# The startup command below only merges them into ~/.claude/settings.json.
-# It jq-merges rather than replacing, because settings.json has concurrent
-# writers: Claude Code itself writes "tui" mid-session, and the built-in claude
-# kit owns defaultMode / bypassPermissionsModeAccepted / themeId there.
+# The startup command below merges them into ~/.claude/settings.json, then
+# installs whatever plugins that file enables. It jq-merges rather than
+# replacing, because settings.json has concurrent writers: Claude Code itself
+# writes "tui" mid-session, and the built-in claude kit owns defaultMode /
+# bypassPermissionsModeAccepted / themeId there.
+#
+# The install step is separate on purpose: enabledPlugins only says which
+# plugins should be active, it does not install them. See the comment on that
+# block for why a settings-only kit gets flaky plugins.
 #
 # Apply with:  sbx run claude --kit ~/personal-scripts/claude-config-kit
 schemaVersion: "2"
 kind: mixin
 name: claude-config
-version: "0.2.0"
+version: "0.3.0"
 displayName: Claude Code Config
-description: Installs a custom status line and preferred settings for Claude Code.
+description: Installs a custom status line, preferred settings, and the plugins they enable.
 
 setup:
   startup:
@@ -32,8 +37,14 @@ setup:
           # out every later kit's commands too. The EXIT trap is set before
           # anything fallible runs and forces status 0 on every path, including
           # one set -e aborts on.
+          #
+          # The || true is not redundant: set -e applies inside trap handlers
+          # too, so if the rm ever fails the handler aborts before reaching
+          # `exit 0` and the real (non-zero) status escapes -- taking out the
+          # rest of the dispatcher chain, which is exactly what this trap
+          # exists to prevent.
           frag=""; out=""
-          trap 'rm -f "$frag" "$out" 2>/dev/null; exit 0' EXIT
+          trap 'rm -f "$frag" "$out" 2>/dev/null || true; exit 0' EXIT
           set -e
 
           S="$HOME/.claude/statusline.sh"
@@ -80,5 +91,40 @@ setup:
           else
             echo "claude-config: settings.json unparseable, left untouched" >&2
           fi
+
+          # Enabling a plugin is not the same as installing one. enabledPlugins
+          # only records which plugins should be ACTIVE; the installed registry
+          # is ~/.claude/plugins/installed_plugins.json, and nothing above
+          # writes it. A sandbox that never runs `claude plugin install` starts
+          # with an empty registry, so the plugins' hooks and skills load at
+          # best inconsistently and can vanish mid-session.
+          #
+          # This has to run after the merge above, because it reads the
+          # marketplaces and plugin list the merge just put in settings.json.
+          #
+          # Driven off the fragment rather than a second hardcoded list, so
+          # enabling a plugin there is all that is ever needed to get it
+          # installed here.
+          #
+          # Startup commands do not inherit a login shell's PATH, so claude is
+          # not necessarily on it. The base claude kit exports exactly this
+          # before calling `claude mcp add`; without it the check below finds
+          # nothing and this whole section silently does nothing.
+          export PATH="$HOME/.local/bin:$HOME/.claude/local:$PATH"
+
+          command -v claude >/dev/null 2>&1 || exit 0
+          installed=$(claude plugin list 2>/dev/null || true)
+          for p in $(jq -r '.enabledPlugins // {} | keys[]' "$F" 2>/dev/null || true); do
+            case "$installed" in
+              *"$p"*) ;;
+              *)
+                if claude plugin install "$p" >/dev/null 2>&1; then
+                  echo "claude-config: installed $p"
+                else
+                  echo "claude-config: could not install $p" >&2
+                fi
+                ;;
+            esac
+          done
       user: "agent"
-      description: Merge status line and preferred settings into ~/.claude/settings.json
+      description: Merge settings and install the plugins they enable

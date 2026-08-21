@@ -17,6 +17,7 @@ Or source `../shell/sbx-kit-wrapper.zsh` and just run `sbx run claude`.
 | `/home/agent/.claude/statusline.sh` | `files/home/.claude/statusline.sh` | static copy at container creation |
 | `/home/agent/.claude-config-kit/settings.json` | `files/home/.claude-config-kit/settings.json` | static copy at container creation |
 | `/home/agent/.claude/settings.json` | merged by the startup command | `jq` recursive merge on every container start |
+| installed plugins | `claude plugin install`, driven by `enabledPlugins` | on every container start, skipped when already installed |
 
 Settings merged in:
 
@@ -58,6 +59,37 @@ cp ~/.claude/statusline-command.sh \
 
 Sandboxes pick the change up on their next creation, not on restart, because the
 copy happens at container creation.
+
+## Why the kit installs plugins, not just enables them
+
+`enabledPlugins` and `extraKnownMarketplaces` are **not** enough on their own.
+They say which plugins should be *active* and where to find them; neither
+installs anything. Installation is tracked separately, in
+`~/.claude/plugins/installed_plugins.json`, and a settings-only kit never
+writes it:
+
+```
+$ claude plugin marketplace list        # both marketplaces registered
+$ claude plugin list
+No plugins installed.
+```
+
+A sandbox in that state loads plugins inconsistently — their hooks and skills
+may work at session start and then stop partway through, which is a
+particularly confusing failure because a hook that silently stops enforcing
+looks exactly like a hook that approves. So the startup command runs
+`claude plugin install` for each key in the fragment's `enabledPlugins`,
+skipping any already installed (~150ms when there is nothing to do).
+
+sbx has no plugin field of its own; this is the same pattern its built-in
+`claude` kit uses to register the MCP gateway — a startup command shelling out
+to the `claude` CLI, tolerant of failure. The `PATH` export before it matters:
+startup commands do not get a login shell, so `claude` is otherwise not found
+and the whole block silently does nothing.
+
+Adding a plugin is therefore a one-line change to
+`files/home/.claude-config-kit/settings.json`; the install list is derived from
+it rather than duplicated.
 
 ## Why a startup command rather than shipping settings.json directly
 
