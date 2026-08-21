@@ -1,0 +1,5 @@
+{
+  "disableBranchProtection": true,
+  "disableWorktreeEnforcement": true,
+  "disableConventionalCommits": false
+}
