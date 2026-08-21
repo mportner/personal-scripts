@@ -12,7 +12,7 @@ stock system with no interpreter to install first.
 | --- | --- |
 | [`bin/brew-upgrade-safe.sh`](bin/brew-upgrade-safe.sh) | `brew upgrade` that holds casks back until a release has soaked upstream |
 | [`shell/sbx-kit-wrapper.zsh`](shell/sbx-kit-wrapper.zsh) | zsh wrapper making a default `--kit` apply to `sbx run claude` |
-| [`claude-config-kit/`](claude-config-kit/) | an [sbx](https://github.com/docker/sandboxes) mixin kit carrying a Claude Code status line and settings into every sandbox |
+| [`claude-config-kit/`](claude-config-kit/) | an [sbx](https://docs.docker.com/ai/sandboxes/) mixin kit carrying a Claude Code status line and settings into every sandbox |
 | [`setup.sh`](setup.sh) | installer — symlinks `bin/`, sources `shell/` |
 | [`uninstall.sh`](uninstall.sh) | reverses `setup.sh` |
 
@@ -53,7 +53,7 @@ Set `PERSONAL_SCRIPTS_BIN` to link somewhere other than `~/.local/bin`.
 
 ### Without the sandbox wrapper
 
-On a machine with no [`sbx`](https://github.com/docker/sandboxes), skip the
+On a machine with no [`sbx`](https://docs.docker.com/ai/sandboxes/), skip the
 wrapper and install everything else:
 
 ```bash
@@ -82,7 +82,7 @@ keep the rest, re-run `./setup.sh --no-sandbox` instead.
 - [`gh`](https://cli.github.com), optional — `brew-upgrade-safe` uses it for an
   authenticated GitHub API rate limit (5000/hr rather than 60/hr), which matters
   because it makes one API call per gated package
-- [`sbx`](https://github.com/docker/sandboxes), optional — only for
+- [`sbx`](https://docs.docker.com/ai/sandboxes/), optional — only for
   `claude-config-kit` and the wrapper
 
 ## The scripts
