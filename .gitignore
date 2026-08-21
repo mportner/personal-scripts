@@ -1,0 +1,22 @@
+# macOS
+.DS_Store
+._*
+.Spotlight-V100
+.Trashes
+
+# Editors
+*.swp
+*.swo
+.idea/
+.vscode/
+
+# Backups and temp files, including the .bak setup.sh/uninstall.sh leave behind
+*.bak
+*.orig
+*.rej
+*~
+*.tmp
+
+# Packed kits produced by `sbx kit pack`
+*.tar.gz
+*.zip

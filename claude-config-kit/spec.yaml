@@ -1,0 +1,84 @@
+# claude-config: an sbx mixin kit that carries Mike's Claude Code setup
+# (a custom three-line status line plus preferred settings) into every sandbox
+# created with it.
+#
+# Two static files are copied to /home/agent at container creation:
+#   files/home/.claude/statusline.sh              the status line script
+#   files/home/.claude-config-kit/settings.json   settings to merge in
+#
+# The startup command below only merges them into ~/.claude/settings.json.
+# It jq-merges rather than replacing, because settings.json has concurrent
+# writers: Claude Code itself writes "tui" mid-session, and the built-in claude
+# kit owns defaultMode / bypassPermissionsModeAccepted / themeId there.
+#
+# Apply with:  sbx run claude --kit ~/personal-scripts/claude-config-kit
+schemaVersion: "2"
+kind: mixin
+name: claude-config
+version: "0.2.0"
+displayName: Claude Code Config
+description: Installs a custom status line and preferred settings for Claude Code.
+
+setup:
+  startup:
+    # Runs as agent, not root: settings.json lives in the agent's home and
+    # root-owned files there would break Claude Code's own writes.
+    - command:
+        - "sh"
+        - "-c"
+        - |
+          # This command must never exit non-zero. /etc/durable-startup.d/run.sh
+          # aborts the whole startup chain on the first failure, which would take
+          # out every later kit's commands too. The EXIT trap is set before
+          # anything fallible runs and forces status 0 on every path, including
+          # one set -e aborts on.
+          frag=""; out=""
+          trap 'rm -f "$frag" "$out" 2>/dev/null; exit 0' EXIT
+          set -e
+
+          S="$HOME/.claude/statusline.sh"
+          F="$HOME/.claude-config-kit/settings.json"
+          C="$HOME/.claude/settings.json"
+
+          mkdir -p "$HOME/.claude"
+          [ -f "$C" ] || printf '{}' > "$C"
+
+          # Temp files alongside the target so the final mv is a same-filesystem
+          # rename: atomic, so a concurrent reader never sees a partial file.
+          frag=$(mktemp "$C.frag.XXXXXX")
+          out=$(mktemp "$C.out.XXXXXX")
+
+          if [ -f "$F" ]; then
+            cat "$F" > "$frag"
+          else
+            printf '{}' > "$frag"
+            echo "claude-config: $F missing, merging status line only" >&2
+          fi
+
+          # Add the status line entry only when the script actually landed.
+          # Pointing statusLine at a missing file would leave every session with
+          # a broken bottom bar.
+          if [ -f "$S" ]; then
+            chmod +x "$S"
+            if jq --arg c "$S" \
+                 '.statusLine = {type: "command", command: $c, padding: 0}' \
+                 "$frag" > "$out" 2>/dev/null; then
+              cat "$out" > "$frag"
+            else
+              echo "claude-config: could not build status line entry" >&2
+            fi
+          else
+            echo "claude-config: $S missing, skipping status line" >&2
+          fi
+
+          # Recursive merge, fragment wins on conflicts. Nested objects (env,
+          # enabledPlugins) merge key-by-key rather than being replaced, so
+          # anything the base claude kit put there survives.
+          if jq -s '.[0] * .[1]' "$C" "$frag" > "$out" 2>/dev/null; then
+            chmod 600 "$out"
+            mv "$out" "$C"
+          else
+            echo "claude-config: settings.json unparseable, left untouched" >&2
+          fi
+      user: "agent"
+      description: Merge status line and preferred settings into ~/.claude/settings.json
