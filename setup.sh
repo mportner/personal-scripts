@@ -36,6 +36,12 @@ BLOCK_END='# personal-scripts end'
 
 ASSUME_YES=0
 DRY_RUN=0
+NO_SANDBOX=0
+
+# The shell fragment that wraps the sbx (Docker sandboxes) CLI. --no-sandbox
+# leaves it out, for machines where sbx is not installed or where you would
+# rather call it unwrapped. Nothing else in the repo depends on it.
+SANDBOX_FRAGMENT='sbx-kit-wrapper.zsh'
 
 usage() {
   cat <<'EOF'
@@ -55,9 +61,12 @@ pruned, and the rc block is rewritten when it drifts. Regular files and symlinks
 pointing outside this repo are never touched.
 
 Options:
-  -y, --yes       Skip the confirmation prompt for editing the shell rc file.
-  -n, --dry-run   Report what would change and exit without changing anything.
-  -h, --help      Show this help.
+  -y, --yes        Skip the confirmation prompt for editing the shell rc file.
+  -n, --dry-run    Report what would change and exit without changing anything.
+      --no-sandbox Leave out the sbx (Docker sandboxes) wrapper. Everything
+                   else installs as usual. Re-running without the flag adds it
+                   back; re-running with it removes it again.
+  -h, --help       Show this help.
 
 Environment:
   PERSONAL_SCRIPTS_BIN   Link directory (default ~/.local/bin).
@@ -68,6 +77,7 @@ while (( $# > 0 )); do
   case "$1" in
     -y|--yes)     ASSUME_YES=1 ;;
     -n|--dry-run) DRY_RUN=1 ;;
+    --no-sandbox) NO_SANDBOX=1 ;;
     -h|--help)    usage; exit 0 ;;
     *) printf 'Unknown option: %s\n\n' "$1" >&2; usage >&2; exit 2 ;;
   esac
@@ -278,6 +288,11 @@ if [[ -d "$SHELL_SRC" ]]; then
 
     base="${src##*/}"
     case "$base" in .*) continue ;; esac
+
+    if (( NO_SANDBOX )) && [[ "$base" == "$SANDBOX_FRAGMENT" ]]; then
+      printf '    skip   %-24s --no-sandbox\n' "$base"
+      continue
+    fi
 
     # A sourced file is never executed, so the executable bit is meaningless
     # here and suggests the file was meant for bin/ instead.

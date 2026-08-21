@@ -51,13 +51,28 @@ disturb entries another installer owns in `~/.local/bin`.
 
 Set `PERSONAL_SCRIPTS_BIN` to link somewhere other than `~/.local/bin`.
 
+### Without the sandbox wrapper
+
+On a machine with no [`sbx`](https://github.com/docker/sandboxes), skip the
+wrapper and install everything else:
+
+```bash
+./setup.sh --no-sandbox
+```
+
+Because re-running converges, this doubles as the way to change your mind
+later. Adding the flag on a machine that already has the wrapper removes its
+`source` line; dropping the flag puts it back. Neither touches anything else.
+
 ## Uninstall
 
 ```bash
 ./uninstall.sh
 ```
 
-Removes the symlinks and offers to strip the managed block from `~/.zshrc`.
+All or nothing: it removes every symlink pointing into this repo and offers to
+strip the managed block from `~/.zshrc`. To remove just the sandbox wrapper and
+keep the rest, re-run `./setup.sh --no-sandbox` instead.
 
 ## Requirements
 
@@ -122,6 +137,8 @@ The kit path is resolved from the fragment's own location, so the repo works
 wherever you clone it. Override with `SBX_DEFAULT_KIT` before sourcing. If the
 kit directory is missing it warns and runs `sbx` unmodified, rather than
 silently dropping the flag.
+
+This is the one piece `./setup.sh --no-sandbox` leaves out.
 
 ## License
 
