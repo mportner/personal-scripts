@@ -1,6 +1,6 @@
 # claude-config-kit
 
-An [sbx](https://github.com/docker/sandboxes) **mixin kit** that carries a
+An [sbx](https://docs.docker.com/ai/sandboxes/) **mixin kit** that carries a
 custom Claude Code status line and a set of preferred settings into every
 sandbox created with it, surviving sandbox recreation.
 
@@ -47,14 +47,20 @@ recreate any sandbox that should pick the change up.
 > and `extraKnownMarketplaces` keys from the fragment; nothing else in the kit
 > depends on them.
 
-`statusline.sh` is a byte-identical copy of the host's own status line script,
-`~/.claude/statusline-command.sh` (md5 `d2b8d87d5ed159628d072af0f29f8970`), which
-is what the host `settings.json` points at. `files/` is copied into the container,
-so it cannot be a symlink to that file. After editing the host script, re-copy it:
+`statusline.sh` is intended to stay byte-identical to the host's own status line
+script, `~/.claude/statusline-command.sh` (md5
+`4e55b8919a69632543e23b8a25437418`), which is what the host `settings.json`
+points at. `files/` is copied into the container, so it cannot be a symlink to
+that file. The two must be re-synced by hand after either one changes:
 
 ```bash
+# host -> repo, after editing the host script
 cp ~/.claude/statusline-command.sh \
    ~/personal-scripts/claude-config-kit/files/home/.claude/statusline.sh
+
+# repo -> host, after editing the copy here
+cp ~/personal-scripts/claude-config-kit/files/home/.claude/statusline.sh \
+   ~/.claude/statusline-command.sh
 ```
 
 Sandboxes pick the change up on their next creation, not on restart, because the
@@ -105,6 +111,12 @@ The merge command must never exit non-zero: `/etc/durable-startup.d/run.sh`
 iterates the registered startup commands and `exit $rc`s on the first failure,
 which would silently drop every command after it, including other kits'. An
 `EXIT` trap forces status 0 on all paths.
+
+The merged file is written `0600`. `settings.json` can carry an `env` block, so
+it is a plausible place for a token to end up; the mode is set on the temp file
+before the rename, so it is never briefly world-readable under its real name.
+The one path that does not apply it is the one that does not write:
+an unparseable `settings.json` is left alone, mode included.
 
 ## Verified behaviour
 

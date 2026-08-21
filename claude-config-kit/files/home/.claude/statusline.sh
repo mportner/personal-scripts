@@ -1,4 +1,13 @@
 #!/bin/sh
+#
+# Claude Code status line. Reads the session JSON on stdin, prints two or three
+# lines.
+#
+# Most variables here are assigned by the `eval` further down rather than by a
+# literal assignment, which shellcheck cannot see through, so SC2154 would fire
+# on every one of them.
+# shellcheck disable=SC2154
+
 input=$(cat)
 
 # Real ESC bytes so color codes can be embedded directly in strings.
@@ -50,7 +59,6 @@ make_bar() {
   filled=$(( pct * width / 100 ))
   [ "$filled" -gt "$width" ] && filled=$width
   [ "$filled" -lt 0 ] && filled=0
-  empty=$(( width - filled ))
   bar=""
   i=0
   while [ $i -lt $filled ]; do bar="${bar}█"; i=$(( i + 1 )); done
@@ -79,6 +87,11 @@ format_rl() {
 }
 
 # --- parse input (single jq call) ---------------------------------------
+#
+# Errors are silenced because this runs as a status line: anything jq writes to
+# stderr on malformed input would surface as noise rather than a diagnostic.
+# Every field below has a // fallback, so an empty eval degrades to the same
+# "--" placeholders as a payload with nothing in it.
 
 eval "$(echo "$input" | jq -r '
   "model="        + ((.model.display_name // "Unknown Model") | tostring | @sh),
@@ -95,7 +108,7 @@ eval "$(echo "$input" | jq -r '
   "rl7_pct="      + ((.rate_limits.seven_day.used_percentage // "") | tostring | @sh),
   "rl7_reset="    + ((.rate_limits.seven_day.resets_at // "") | tostring | @sh),
   "current_dir="  + ((.workspace.current_dir // .cwd // .worktree.original_cwd // "") | tostring | @sh)
-')"
+' 2>/dev/null)"
 
 # Strip the " (1M context)" suffix Claude Code appends to the model name.
 model="${model%% (*}"
@@ -172,6 +185,15 @@ if [ -n "$top_level" ]; then
     END { printf "%d %d", s + 0, m + 0 }')
   staged="${counts%% *}"
   modified="${counts##* }"
+
+  # --abbrev-ref reports the literal string "HEAD" when the checkout is
+  # detached, which renders as a branch named HEAD. Show the commit instead.
+  # The extra process runs only in the detached case, so the common path is
+  # still the one rev-parse above.
+  if [ "$branch" = "HEAD" ]; then
+    short=$(git -C "$current_dir" rev-parse --short HEAD 2>/dev/null)
+    [ -n "$short" ] && branch="detached@${short}"
+  fi
 
   git_str="$branch"
   [ "$staged" -gt 0 ]   2>/dev/null && git_str="${git_str} ${GREEN}+${staged}${RESET}"
