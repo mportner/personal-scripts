@@ -1,0 +1,44 @@
+# Dependabot configuration for personal-scripts.
+#
+# Policy, matching the one used across the league-* repos:
+#   - Weekly, grouped PRs for non-major minor/patch bumps: one github-actions
+#     group, so a quiet week produces one PR rather than several.
+#   - Major-version updates are ignored entirely; the maintainer reviews majors
+#     by hand. That covers the actions/checkout v7 -> v8 kind of bump, which
+#     usually carries a runner or Node requirement worth reading first.
+#   - cooldown.default-days: 7 keeps a release out of a PR until it has had a
+#     week of community shake-out. This is the same argument bin/brew-upgrade-safe
+#     makes for casks, applied to CI: being first to a bad release costs more
+#     than being a week late to a good one.
+#
+# Only one ecosystem: this repo is shell scripts and YAML, with no package
+# manifest, lockfile, or container image for Dependabot to read. The single
+# workflow is what it tracks.
+#
+# Why this exists at all: .github/workflows/shellcheck.yml pins actions/checkout
+# to a commit SHA rather than a tag, because a tag is a mutable ref that a
+# compromised upstream can repoint. A pin that nobody updates is how you end up
+# on a two-year-old action, so Dependabot owns the refresh -- it rewrites both
+# the SHA and the trailing "# vX.Y.Z" comment, which is exactly the maintenance
+# the pin would otherwise need by hand.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    cooldown:
+      default-days: 7
+    groups:
+      actions:
+        patterns:
+          - '*'
+        update-types:
+          - minor
+          - patch
+    ignore:
+      - dependency-name: '*'
+        update-types:
+          - version-update:semver-major
