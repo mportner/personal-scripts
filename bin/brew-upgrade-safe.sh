@@ -176,8 +176,8 @@ package_released_at() {
   fi
   [[ -z "$info" ]] && return 0
 
-  tap="${info%%$TAB*}"
-  path="${info#*$TAB}"
+  tap="${info%%"$TAB"*}"
+  path="${info#*"$TAB"}"
   [[ -z "$tap" || -z "$path" || "$path" == "$info" ]] && return 0
 
   # Tap "homebrew/core" lives at github.com/homebrew/homebrew-core, and
@@ -262,7 +262,7 @@ candidates=()
 # Formulae upgrade freely unless explicitly gated. NEVER_GATE overrides that,
 # so a formula listed in both still upgrades immediately.
 for entry in ${outdated_formulae[@]+"${outdated_formulae[@]}"}; do
-  name="${entry%%$TAB*}"
+  name="${entry%%"$TAB"*}"
   if in_list "$name" ${NEVER_GATE[@]+"${NEVER_GATE[@]}"}; then
     free+=("formula$TAB$entry")
   elif in_list "$name" ${GATED_FORMULAE[@]+"${GATED_FORMULAE[@]}"}; then
@@ -275,7 +275,7 @@ done
 # Casks are gated by default, but NEVER_GATE applies to them too so that
 # security-critical apps are not left sitting on a known-vulnerable version.
 for entry in ${outdated_casks[@]+"${outdated_casks[@]}"}; do
-  name="${entry%%$TAB*}"
+  name="${entry%%"$TAB"*}"
   if in_list "$name" ${NEVER_GATE[@]+"${NEVER_GATE[@]}"}; then
     free+=("cask$TAB$entry")
   else
@@ -318,7 +318,7 @@ fi
 # Align the name column across every section.
 namew=4
 for entry in ${free[@]+"${free[@]}"} ${ready[@]+"${ready[@]}"} ${holding[@]+"${holding[@]}"}; do
-  rest="${entry#*$TAB}"; n="${rest%%$TAB*}"; (( ${#n} > namew )) && namew=${#n}
+  rest="${entry#*"$TAB"}"; n="${rest%%"$TAB"*}"; (( ${#n} > namew )) && namew=${#n}
 done
 
 echo "==> Upgrade plan"
