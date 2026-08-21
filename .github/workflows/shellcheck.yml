@@ -1,0 +1,86 @@
+name: shellcheck
+
+on:
+  push:
+    branches: [main]
+  # pull_request, NOT pull_request_target: a fork's PR must run with the fork's
+  # code and none of this repo's write access. pull_request_target would hand a
+  # writable token to code from the PR branch.
+  pull_request:
+  workflow_dispatch:
+
+# Caps GITHUB_TOKEN for every job. This workflow only reads the checkout, so
+# nothing below needs more than this.
+permissions:
+  contents: read
+
+# A superseded push should not keep burning a runner.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  shellcheck:
+    runs-on: ubuntu-latest
+    # Nothing here should take more than a few seconds; the job default is 6
+    # hours, which is a long time to spend on a hung apt mirror.
+    timeout-minutes: 10
+    steps:
+      # Pinned to a commit, not a tag: v7 and v7.0.1 are mutable refs that a
+      # compromised upstream can repoint at arbitrary code, which is exactly
+      # how past Actions supply-chain attacks have been delivered. Re-pin
+      # deliberately when upgrading; the trailing comment is the human-readable
+      # version, not what resolves.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Default is true, which leaves the token in .git/config for every
+          # later step to read. Nothing here pushes, so it is dead weight with
+          # a blast radius.
+          persist-credentials: false
+
+      - name: Install shellcheck
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y shellcheck
+          shellcheck --version
+
+      # setup.sh and uninstall.sh target bash 3.2 (what macOS ships), so they
+      # are checked as bash rather than sh even though they avoid bash 4
+      # features. shellcheck has no 3.2 dialect; the constraint is enforced by
+      # the grep step below instead.
+      - name: Check bash scripts
+        run: shellcheck -s bash setup.sh uninstall.sh bin/brew-upgrade-safe.sh
+
+      - name: Check the status line (POSIX sh)
+        run: shellcheck -s sh claude-config-kit/files/home/.claude/statusline.sh
+
+      # The kit's startup command is shell embedded in YAML, so shellcheck
+      # cannot reach it in place. Pull it out and check it like any other file.
+      - name: Check the kit startup command
+        run: |
+          # Distro package rather than pip: the runner's Python is
+          # externally managed (PEP 668), so a plain `pip install` is refused.
+          sudo apt-get install -y python3-yaml
+          python3 - <<'PY'
+          import yaml
+          spec = yaml.safe_load(open("claude-config-kit/spec.yaml"))
+          cmd = spec["setup"]["startup"][0]["command"]
+          assert cmd[:2] == ["sh", "-c"], f"unexpected startup form: {cmd[:2]}"
+          open("startup-extracted.sh", "w").write(cmd[2])
+          PY
+          shellcheck -s sh startup-extracted.sh
+
+      # bash 3.2 has no mapfile/readarray and no associative arrays, and macOS
+      # will not be getting a newer bash. Catching these here is cheaper than
+      # finding out on a fresh machine.
+      - name: Reject bash 4+ constructs
+        run: |
+          # ^[^#]* keeps the match on the code side of any comment: these very
+          # scripts have a header comment saying "no mapfile", which a naive
+          # pattern would flag as a violation of itself.
+          if grep -nE '^[^#]*(\b(mapfile|readarray)\b|declare -A|local -A)' \
+               setup.sh uninstall.sh bin/brew-upgrade-safe.sh; then
+            echo "::error::bash 4+ construct found; these scripts target bash 3.2"
+            exit 1
+          fi
+          echo "none found"

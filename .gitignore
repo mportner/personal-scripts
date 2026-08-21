@@ -20,3 +20,6 @@
 # Packed kits produced by `sbx kit pack`
 *.tar.gz
 *.zip
+
+# Shell pulled out of claude-config-kit/spec.yaml so shellcheck can read it
+startup-extracted.sh
