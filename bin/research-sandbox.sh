@@ -33,8 +33,19 @@ set -euo pipefail
 # Resolved through symlinks: setup.sh installs this as ~/.local/bin/<name>, so
 # BASH_SOURCE is the symlink and its dirname is the link directory, not the
 # repo. pwd -P does not help, because the link directory is itself real.
+#
+# Walked by hand rather than with `readlink -f`: macOS only gained -f in 12.3,
+# and falling back to the unresolved path on older systems would silently put
+# REPO_DIR one level above the link directory, reporting the kits as missing.
+# Plain `readlink` is available everywhere.
 SELF="${BASH_SOURCE[0]}"
-SELF="$(readlink -f -- "$SELF" 2>/dev/null || printf '%s' "$SELF")"
+while [[ -L "$SELF" ]]; do
+  link="$(readlink -- "$SELF")"
+  case "$link" in
+    /*) SELF="$link" ;;
+    *)  SELF="$(cd -- "$(dirname -- "$SELF")" && pwd -P)/$link" ;;
+  esac
+done
 REPO_DIR="$(cd -- "$(dirname -- "$SELF")/.." && pwd -P)"
 CONFIG_KIT="$REPO_DIR/claude-config-kit"
 RESEARCH_KIT="$REPO_DIR/research-kit"
@@ -148,25 +159,21 @@ if (( DESTROY )); then
 
   # Leaving this behind would silently apply to any future sandbox that
   # happens to reuse the name.
-  has_secret() { sbx secret ls 2>/dev/null | grep -qE "^${NAME}[[:space:]]"; }
-
+  # `yes |` feeds the confirmation prompt, but the pipeline exits non-zero even
+  # when the delete succeeds, so its status says nothing. Check the store
+  # afterwards instead: this is the step that has to be trustworthy, since a
+  # leftover token would silently apply to a later sandbox that reused the name.
+  # Not gated on a prior `secret ls` for the reason given in rollback().
   if (( DRY_RUN )); then
     printf '    would run: sbx secret rm --sandbox %s github\n' "$NAME"
-  elif has_secret; then
-    # `yes |` feeds the confirmation prompt, but the pipeline exits non-zero
-    # even when the delete succeeds, so its status says nothing. Check the
-    # store afterwards instead: this is the step that has to be trustworthy,
-    # since a leftover token would silently apply to a later sandbox that
-    # reused the name.
+  else
     yes | sbx secret rm --sandbox "$NAME" github >/dev/null 2>&1 || true
-    if has_secret; then
+    if sbx secret ls 2>/dev/null | grep -qE "^${NAME}[[:space:]]"; then
       note "WARNING: scoped secret still present. Remove it with:"
       note "  sbx secret rm --sandbox $NAME github"
     else
-      note "removed sandbox-scoped github secret"
+      note "no scoped secret left behind"
     fi
-  else
-    note "no scoped secret to remove"
   fi
 
   step "Done"
@@ -247,7 +254,14 @@ fi
 # A narrow token still permits pushing anywhere in the repos it covers.
 # The ruleset is the only thing keeping the agent off the default branch.
 
-if command -v gh >/dev/null 2>&1; then
+# jq is only needed here, so it is checked here rather than as a hard
+# dependency. Without the guard a missing jq yields an empty rule list, which
+# reads as "no ruleset" and fires a warning that is not true.
+if ! command -v gh >/dev/null 2>&1; then
+  note "ruleset   skipped, gh not installed on the host"
+elif ! command -v jq >/dev/null 2>&1; then
+  note "ruleset   skipped, jq not installed on the host"
+else
   if rules="$(gh api "repos/$owner/$repo/rulesets" 2>/dev/null)"; then
     protected=0
     for id in $(printf '%s' "$rules" | jq -r '.[]?.id' 2>/dev/null); do
@@ -271,8 +285,6 @@ if command -v gh >/dev/null 2>&1; then
   else
     note "ruleset   could not check (no access to $owner/$repo, or repo not found)"
   fi
-else
-  note "ruleset   skipped, gh not installed on the host"
 fi
 
 if (( DRY_RUN )); then
@@ -313,12 +325,44 @@ fi
 
 # --- create -----------------------------------------------------------------
 
+# Roll back on failure. The secret is staged before creation deliberately, so
+# a failed create would otherwise leave a live credential scoped to a sandbox
+# that does not exist, and it would silently apply to any later sandbox that
+# reused the name. That is the exact hazard --destroy exists to prevent, so it
+# must not be reachable by simply having creation fail.
+rollback() {
+  printf '\n'
+  step "Creation failed, rolling back"
+
+  if [[ -d "$SEED" ]]; then
+    note "removing seed clone $SEED"
+    rm -rf "$SEED"
+  fi
+
+  # Attempted unconditionally rather than gated on a prior `secret ls`: the
+  # store is written by the daemon, so a read immediately after `secret set`
+  # can still show nothing and would skip the delete, leaving the credential.
+  # Deleting something absent is harmless; the verify below is what reports.
+  if (( ! NO_TOKEN )); then
+    yes | sbx secret rm --sandbox "$NAME" github >/dev/null 2>&1 || true
+    if sbx secret ls 2>/dev/null | grep -qE "^${NAME}[[:space:]]"; then
+      note "WARNING: scoped secret survived rollback. Remove it with:"
+      note "  sbx secret rm --sandbox $NAME github"
+    else
+      note "no staged secret left behind"
+    fi
+  fi
+}
+
 printf '\n'
 step "Creating sandbox"
-run sbx create claude --clone --name "$NAME" \
+if ! run sbx create claude --clone --name "$NAME" \
   --kit "$CONFIG_KIT" \
   --kit "$RESEARCH_KIT" \
-  "$SEED"
+  "$SEED"; then
+  rollback
+  die "sandbox creation failed; nothing was left behind"
+fi
 
 if (( DRY_RUN )); then exit 0; fi
 
