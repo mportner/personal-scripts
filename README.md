@@ -3,7 +3,7 @@
 Personal macOS shell scripts and configuration, kept in one repo so a new
 machine is one `git clone` and one `./setup.sh` away.
 
-Everything here targets **bash 3.2** — the version macOS ships — so it runs on a
+Everything here targets **bash 3.2** (the version macOS ships), so it runs on a
 stock system with no interpreter to install first.
 
 ## Contents
@@ -13,7 +13,7 @@ stock system with no interpreter to install first.
 | [`bin/brew-upgrade-safe.sh`](bin/brew-upgrade-safe.sh) | `brew upgrade` that holds casks back until a release has soaked upstream |
 | [`shell/sbx-kit-wrapper.zsh`](shell/sbx-kit-wrapper.zsh) | zsh wrapper making a default `--kit` apply to `sbx run claude` |
 | [`claude-config-kit/`](claude-config-kit/) | an [sbx](https://docs.docker.com/ai/sandboxes/) mixin kit carrying a Claude Code status line and settings into every sandbox |
-| [`setup.sh`](setup.sh) | installer — symlinks `bin/`, sources `shell/` |
+| [`setup.sh`](setup.sh) | installer: symlinks `bin/`, sources `shell/` |
 | [`uninstall.sh`](uninstall.sh) | reverses `setup.sh` |
 
 ## Install
@@ -26,17 +26,17 @@ cd ~/personal-scripts
 
 `setup.sh` does two things:
 
-- **`bin/`** — symlinks each executable into `~/.local/bin` with a known script
+- **`bin/`** symlinks each executable into `~/.local/bin` with a known script
   extension (`.sh`, `.bash`, `.zsh`, `.py`, `.rb`, `.pl`) stripped, so
   `brew-upgrade-safe.sh` becomes the command `brew-upgrade-safe`.
-- **`shell/`** — adds a marked block to `~/.zshrc` that puts that directory on
+- **`shell/`** adds a marked block to `~/.zshrc` that puts that directory on
   `PATH` and `source`s every fragment. Fragments define shell functions, so they
   must be sourced rather than executed, which is why they are never symlinked
   onto `PATH`.
 
 It prompts before touching `~/.zshrc` and backs the file up first. If it finds
-one of its marker comments without the matching partner — a half-removed block,
-or a hand-edited one — it refuses to touch the file rather than guess where the
+one of its marker comments without the matching partner (a half-removed block,
+or a hand-edited one), it refuses to touch the file rather than guess where the
 block ends. Preview without changing anything:
 
 ```bash
@@ -44,7 +44,7 @@ block ends. Preview without changing anything:
 ```
 
 Re-running is safe and is how you pick up new scripts: it converges on the
-current contents of both directories — new scripts are linked, moved ones
+current contents of both directories: new scripts are linked, moved ones
 repointed, links to deleted scripts pruned, and the rc block rewritten if it has
 drifted. Only symlinks pointing into this repo are ever touched, so it cannot
 disturb entries another installer owns in `~/.local/bin`.
@@ -78,11 +78,11 @@ keep the rest, re-run `./setup.sh --no-sandbox` instead.
 
 - macOS with [Homebrew](https://brew.sh)
 - `zsh` (the macOS default) for the `shell/` fragments
-- `jq` — required by `brew-upgrade-safe` and the status line: `brew install jq`
-- [`gh`](https://cli.github.com), optional — `brew-upgrade-safe` uses it for an
+- `jq`, required by `brew-upgrade-safe` and the status line: `brew install jq`
+- [`gh`](https://cli.github.com), optional: `brew-upgrade-safe` uses it for an
   authenticated GitHub API rate limit (5000/hr rather than 60/hr), which matters
   because it makes one API call per gated package
-- [`sbx`](https://docs.docker.com/ai/sandboxes/), optional — only for
+- [`sbx`](https://docs.docker.com/ai/sandboxes/), optional: only for
   `claude-config-kit` and the wrapper
 
 ## The scripts
@@ -92,7 +92,7 @@ keep the rest, re-run `./setup.sh --no-sandbox` instead.
 Upgrades formulae immediately but holds casks back until their definition has
 been in the Homebrew tap for a cooldown window (default 5 days), so you are not
 first to install a broken release. It builds the whole plan first, prints it in
-three sections — no cooldown, past cooldown, holding back — and asks before
+three sections (no cooldown, past cooldown, holding back) and asks before
 changing anything.
 
 ```bash
@@ -102,7 +102,7 @@ brew-upgrade-safe -d 10        # 10-day cooldown
 ```
 
 Security-critical packages are listed in `NEVER_GATE` inside the script and
-always upgrade immediately — for a browser, a delayed security patch is a bigger
+always upgrade immediately: for a browser, a delayed security patch is a bigger
 risk than a bad release. Edit that list, and `GATED_FORMULAE` next to it, to
 taste.
 
@@ -122,7 +122,7 @@ spec reference.
 > `devpowers` plugin from the `mportner/agentpowers` marketplace, which is a
 > private repository and will not resolve for you. Remove the
 > `enabledPlugins` and `extraKnownMarketplaces` entries from
-> `claude-config-kit/files/home/.claude-config-kit/settings.json` — the status
+> `claude-config-kit/files/home/.claude-config-kit/settings.json`; the status
 > line and every other setting work without them.
 
 ### `sbx-kit-wrapper.zsh`

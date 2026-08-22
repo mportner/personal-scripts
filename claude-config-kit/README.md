@@ -80,7 +80,7 @@ $ claude plugin list
 No plugins installed.
 ```
 
-A sandbox in that state loads plugins inconsistently — their hooks and skills
+A sandbox in that state loads plugins inconsistently: their hooks and skills
 may work at session start and then stop partway through, which is a
 particularly confusing failure because a hook that silently stops enforcing
 looks exactly like a hook that approves. So the startup command runs
@@ -88,7 +88,7 @@ looks exactly like a hook that approves. So the startup command runs
 skipping any already installed (~150ms when there is nothing to do).
 
 sbx has no plugin field of its own; this is the same pattern its built-in
-`claude` kit uses to register the MCP gateway — a startup command shelling out
+`claude` kit uses to register the MCP gateway: a startup command shelling out
 to the `claude` CLI, tolerant of failure. The `PATH` export before it matters:
 startup commands do not get a login shell, so `claude` is otherwise not found
 and the whole block silently does nothing.
@@ -103,8 +103,8 @@ it rather than duplicated.
 it with `defaultMode`, `bypassPermissionsModeAccepted`, `themeId`,
 `alwaysThinkingEnabled` and `skipDangerousModePermissionPrompt`, and Claude Code
 itself writes to it mid-session. Shipping the file statically would clobber all
-of that, so the kit ships a *fragment* and merges it with `jq -s '.[0] * .[1]'`
-— a recursive merge, so nested objects like `env` merge key-by-key instead of
+of that, so the kit ships a *fragment* and merges it with `jq -s '.[0] * .[1]'`,
+a recursive merge, so nested objects like `env` merge key-by-key instead of
 being replaced.
 
 The merge command must never exit non-zero: `/etc/durable-startup.d/run.sh`
@@ -151,7 +151,7 @@ recreating loses Claude Code session history. A bind-mounted workspace on the
 host is unaffected.
 
 To apply the settings to a *running* sandbox without recreating it, run the
-merge imperatively — it is the same logic, but it lives on the container overlay
+merge imperatively: it is the same logic, but it lives on the container overlay
 and dies on recreate.
 
 ## Kit spec reference (sbx 0.38.0)

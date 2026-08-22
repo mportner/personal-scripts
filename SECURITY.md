@@ -2,7 +2,7 @@
 
 These are personal scripts, published so a new machine is one `git clone` away
 and so the approach is easy to share. They are maintained on a best-effort
-basis by one person. Please calibrate expectations accordingly — but do report
+basis by one person. Please calibrate expectations accordingly, but do report
 things, because these scripts run on other people's machines.
 
 ## Supported versions
@@ -26,15 +26,15 @@ lands on `main` and the advisory is published once it is out.
 Anything where running this repo as documented could compromise the machine it
 runs on:
 
-- `setup.sh` / `uninstall.sh` — they edit `~/.zshrc` and create symlinks in
+- `setup.sh` / `uninstall.sh`: they edit `~/.zshrc` and create symlinks in
   `~/.local/bin`. Path handling, symlink handling, and the marker-block logic
   that rewrites the rc file are the sensitive parts.
-- `bin/brew-upgrade-safe.sh` — it decides which Homebrew packages to upgrade.
+- `bin/brew-upgrade-safe.sh`: it decides which Homebrew packages to upgrade.
   A flaw that causes it to skip a security update, or to upgrade something it
   should have held back, is in scope.
-- `claude-config-kit/` — the startup command merges into
+- `claude-config-kit/`: the startup command merges into
   `~/.claude/settings.json` inside a sandbox container.
-- `.github/workflows/` — CI supply-chain issues.
+- `.github/workflows/`: CI supply-chain issues.
 
 ## What is out of scope
 
@@ -53,5 +53,5 @@ Everything here is shell. `setup.sh`, `uninstall.sh`, and
 `claude-config-kit/files/home/.claude/statusline.sh` is POSIX `sh`. CI runs
 `shellcheck` on all of them plus the shell embedded in the kit spec. Note that
 shellcheck is a correctness linter, not a security scanner, and CodeQL has no
-shell analyzer — so the scripts themselves are covered by review, not by an
+shell analyzer, so the scripts themselves are covered by review, not by an
 automated scanner.
