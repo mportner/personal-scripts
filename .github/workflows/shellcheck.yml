@@ -49,7 +49,7 @@ jobs:
       # features. shellcheck has no 3.2 dialect; the constraint is enforced by
       # the grep step below instead.
       - name: Check bash scripts
-        run: shellcheck -s bash setup.sh uninstall.sh bin/brew-upgrade-safe.sh
+        run: shellcheck -s bash setup.sh uninstall.sh bin/*.sh
 
       - name: Check the status line (POSIX sh)
         run: shellcheck -s sh claude-config-kit/files/home/.claude/statusline.sh
@@ -79,7 +79,7 @@ jobs:
           # scripts have a header comment saying "no mapfile", which a naive
           # pattern would flag as a violation of itself.
           if grep -nE '^[^#]*(\b(mapfile|readarray)\b|declare -A|local -A)' \
-               setup.sh uninstall.sh bin/brew-upgrade-safe.sh; then
+               setup.sh uninstall.sh bin/*.sh; then
             echo "::error::bash 4+ construct found; these scripts target bash 3.2"
             exit 1
           fi
