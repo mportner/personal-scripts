@@ -3,9 +3,17 @@
 # Policy, matching the one used across the league-* repos:
 #   - Weekly, grouped PRs for non-major minor/patch bumps: one github-actions
 #     group, so a quiet week produces one PR rather than several.
-#   - Major-version updates are ignored entirely; the maintainer reviews majors
-#     by hand. That covers the actions/checkout v7 -> v8 kind of bump, which
-#     usually carries a runner or Node requirement worth reading first.
+#   - Major-version updates ARE proposed, which is a deliberate departure from
+#     the league-* policy of ignoring them. There, majors are ignored because the
+#     dependency tree is large and a major usually means real migration work. Here
+#     the only dependency is the pinned actions/checkout, so ignoring majors would
+#     mean nothing ever tells you v8 shipped, and the pin would quietly rot at v7
+#     forever. The group below is scoped to minor and patch, so a major arrives as
+#     its own separate PR rather than bundled with routine bumps.
+#
+#     If more dependencies are added later and the house ignore-majors policy is
+#     wanted for those, list them by name in an `ignore:` block. Do not reintroduce
+#     a `dependency-name: '*'` wildcard, which would silently re-cover checkout.
 #   - cooldown.default-days: 7 keeps a release out of a PR until it has had a
 #     week of community shake-out. This is the same argument bin/brew-upgrade-safe
 #     makes for casks, applied to CI: being first to a bad release costs more
@@ -38,7 +46,3 @@ updates:
         update-types:
           - minor
           - patch
-    ignore:
-      - dependency-name: '*'
-        update-types:
-          - version-update:semver-major
