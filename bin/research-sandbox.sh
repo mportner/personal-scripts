@@ -218,6 +218,11 @@ owner="${slug%%/*}"
 repo="${slug##*/}"
 [[ -n "$owner" && -n "$repo" ]] || die "cannot parse owner/repo from: $REPO_ARG"
 
+# Always HTTPS, even when the caller passed an SSH URL. This is load-bearing,
+# not a normalisation nicety: the sandbox inherits origin from this seed clone,
+# and its GitHub auth is the sbx proxy injecting an Authorization header into
+# HTTPS traffic. An SSH origin would give the sandbox a remote it has no key
+# for, breaking push and `gh pr create` inside it.
 CLONE_URL="https://github.com/$owner/$repo.git"
 NAME="${NAME:-research-$repo}"
 SEED="$SEED_ROOT/$NAME"
