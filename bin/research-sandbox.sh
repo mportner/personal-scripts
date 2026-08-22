@@ -93,10 +93,6 @@ the repo's ruleset, not the token.
 EOF
 }
 
-die() { printf 'research-sandbox: %s\n' "$1" >&2; exit 1; }
-note() { printf '    %s\n' "$1"; }
-step() { printf '==> %s\n' "$1"; }
-
 run() {
   if (( DRY_RUN )); then
     printf '    would run: %s\n' "$*"
@@ -105,12 +101,21 @@ run() {
   "$@"
 }
 
+die() { printf 'research-sandbox: %s\n' "$1" >&2; exit 1; }
+note() { printf '    %s\n' "$1"; }
+step() { printf '==> %s\n' "$1"; }
+
+# An option that consumes a value must confirm one is there. Otherwise the
+# inner `shift` empties "$@" and the loop's own `shift` fails, which under
+# set -e exits the script silently with no diagnostic at all.
+need_value() { (( $# >= 2 )) || die "$1 needs a value"; }
+
 while (( $# > 0 )); do
   case "$1" in
-    -n|--name)      NAME="${2:-}"; shift ;;
-    -r|--token-ref) TOKEN_REF="${2:-}"; shift ;;
+    -n|--name)      need_value "$@"; NAME="$2"; shift ;;
+    -r|--token-ref) need_value "$@"; TOKEN_REF="$2"; shift ;;
     --no-token)     NO_TOKEN=1 ;;
-    --destroy)      DESTROY=1; NAME="${2:-}"; shift ;;
+    --destroy)      need_value "$@"; DESTROY=1; NAME="$2"; shift ;;
     -f|--force)     FORCE=1 ;;
     -y|--yes)       ASSUME_YES=1 ;;
     --dry-run)      DRY_RUN=1 ;;
@@ -168,7 +173,7 @@ if (( DESTROY )); then
     printf '    would run: sbx secret rm --sandbox %s github\n' "$NAME"
   else
     yes | sbx secret rm --sandbox "$NAME" github >/dev/null 2>&1 || true
-    if sbx secret ls 2>/dev/null | grep -qE "^${NAME}[[:space:]]"; then
+    if secret_present; then
       note "WARNING: scoped secret still present. Remove it with:"
       note "  sbx secret rm --sandbox $NAME github"
     else
@@ -330,6 +335,14 @@ fi
 # that does not exist, and it would silently apply to any later sandbox that
 # reused the name. That is the exact hazard --destroy exists to prevent, so it
 # must not be reachable by simply having creation fail.
+# Exact string compare rather than a regex: sandbox names may contain periods
+# and plus signs, which are ERE metacharacters. "a+b" as a pattern means "one
+# or more a, then b" and would not match the literal scope "a+b", so the
+# post-delete check would report a credential gone while it was still stored.
+secret_present() {
+  sbx secret ls 2>/dev/null | awk -v n="$NAME" 'NR > 1 && $1 == n { found = 1 } END { exit !found }'
+}
+
 rollback() {
   printf '\n'
   step "Creation failed, rolling back"
@@ -345,7 +358,7 @@ rollback() {
   # Deleting something absent is harmless; the verify below is what reports.
   if (( ! NO_TOKEN )); then
     yes | sbx secret rm --sandbox "$NAME" github >/dev/null 2>&1 || true
-    if sbx secret ls 2>/dev/null | grep -qE "^${NAME}[[:space:]]"; then
+    if secret_present; then
       note "WARNING: scoped secret survived rollback. Remove it with:"
       note "  sbx secret rm --sandbox $NAME github"
     else
