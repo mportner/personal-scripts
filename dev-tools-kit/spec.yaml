@@ -1,0 +1,408 @@
+# File:    spec.yaml
+# Created: 2026-08-26
+# License: MIT
+#
+# Copyright (c) 2026 Michael Portner
+#
+# dev-tools: an sbx mixin kit that puts the toolchain Mike's projects expect
+# into a sandbox before the agent starts, so the agent never has to install
+# its own tooling.
+#
+# The stock claude-code-docker image ships Node 22 from Ubuntu universe, no
+# pnpm, and gh 2.46. Every project here wants Node 24 and a pnpm pinned by
+# packageManager, so each session opened with the agent discovering that,
+# failing to run `corepack enable` (it cannot write /usr/bin), and hand-rolling
+# a pnpm shim in its scratch directory. Measured on a real session: 27 of 89
+# bash calls went to toolchain wrangling before any work started.
+#
+# Stacks with claude-config rather than replacing it:
+#   sbx create claude \
+#     --kit ~/personal-scripts/claude-config-kit \
+#     --kit ~/personal-scripts/dev-tools-kit .
+#
+# It also carries the host's supply-chain policy in, which the sandbox
+# otherwise lacks: minimumReleaseAge, minimumReleaseAgeStrict and
+# blockExoticSubdeps applied globally rather than only inside repositories that
+# commit them. Every direct download is a pinned version checked against the
+# publisher's own checksum manifest; the supporting packages come from apt,
+# signed by the distro and versioned by it rather than pinned here. Nothing
+# runs through npm or npx.
+#
+# Roughly 30s at sandbox creation, most of it the Playwright system libraries;
+# about 15s with SBX_DEV_TOOLS_PLAYWRIGHT=0 (see below) to skip those. Measured
+# range across runs is 30 to 40s, the variance coming from the apt mirror.
+schemaVersion: "2"
+kind: mixin
+name: dev-tools
+version: "0.1.0"
+displayName: Dev Toolchain
+description: Installs Node 24, standalone pnpm, current gh, and project tooling.
+
+environment:
+  variables:
+    # pnpm derives its global bin directory as $PNPM_HOME/bin, so this points
+    # one level above ~/.local/bin, which is already first on PATH. The default
+    # (~/.local/share/pnpm) makes every `pnpm config`, `pnpm bin -g` and global
+    # install print "the configured global bin directory is not in PATH" and
+    # exit 1.
+    PNPM_HOME: /home/agent/.local
+    # Nothing here should ever act on an npm self-update notice.
+    NPM_CONFIG_UPDATE_NOTIFIER: "false"
+
+setup:
+  install:
+    - user: "0"
+      description: Install Node 24, pnpm, gh, and project tooling
+      command: |
+        set -eu
+
+        # ---- pinned versions -------------------------------------------
+        # Bump these by hand. Each is checksum-verified below against the
+        # publisher's own manifest, so a bad pin fails loudly rather than
+        # installing something unexpected.
+        NODE_VERSION=24.20.0        # LTS Krypton; projects declare engines node 24.x
+        PNPM_VERSION=11.22.0        # baseline only; packageManager wins per project.
+                                    # Published 2026-08-15, so it has cleared the 5-day
+                                    # release-age window this setup enforces everywhere
+                                    # else. Check that before bumping: pnpm's own
+                                    # self-download is not subject to the window.
+        # sha256 of the release tarballs, pinned here rather than fetched: pnpm
+        # publishes no checksum manifest alongside them. Recompute on bump with
+        #   curl -fsSL .../pnpm-linux-<arch>.tar.gz | shasum -a 256
+        PNPM_SHA256_arm64=f1426231f365bdfd46c15fa3d1211c3936ee2c4e557afd304f6c66dbf1b2a8bf
+        PNPM_SHA256_x64=4c592fa410eb23b69691a9efb9bf21c87c15b3e9d88c6ec8acdd354a0eb8de71
+        GH_VERSION=2.98.0           # image ships 2.46, which predates several flags in use
+        TRUFFLEHOG_VERSION=3.97.1   # league-service security:scan; its own script says
+                                    # `brew install`, which cannot work on Linux
+        # ----------------------------------------------------------------
+
+        # Opt out of the slowest piece without editing this file:
+        #   sbx create ... -e SBX_DEV_TOOLS_PLAYWRIGHT=0
+        PLAYWRIGHT="${SBX_DEV_TOOLS_PLAYWRIGHT:-1}"
+
+        export DEBIAN_FRONTEND=noninteractive
+        export PATH="/usr/local/bin:$PATH"
+
+        # Selects the pnpm hash by name rather than by building a variable
+        # reference and eval-ing it. NODE_ARCH is constrained to two values
+        # right here so the eval was not reachable with anything hostile, but
+        # this runs as root and a case statement costs nothing.
+        case "$(dpkg --print-architecture)" in
+          arm64) NODE_ARCH=arm64; GO_ARCH=arm64; PNPM_SHA256="$PNPM_SHA256_arm64" ;;
+          amd64) NODE_ARCH=x64;   GO_ARCH=amd64; PNPM_SHA256="$PNPM_SHA256_x64" ;;
+          *) echo "dev-tools: unsupported architecture $(dpkg --print-architecture)" >&2; exit 1 ;;
+        esac
+
+        # Optional extras must not take sandbox creation down with them: a
+        # transient 502 from a release host is not a reason to have no sandbox.
+        # The core toolchain below is the opposite, and is left under set -e.
+        soft() {
+          "$@" || echo "dev-tools: optional step failed: $*" >&2
+        }
+
+        # The optional installers below stay as `sh -c` blocks rather than
+        # becoming shell functions. set -e is suppressed for a command on the
+        # left of ||, and that suppression reaches into a function body: a
+        # `soft install_gh` whose first curl failed would carry on to the
+        # install step and put a truncated binary on PATH. It does not reach
+        # into a separate shell process, so `sh -c` with its own set -eu is
+        # what makes each block abort at the first failure and report once.
+
+        # --- required system packages -----------------------------------
+        # libatomic1 is not in the base image and the standalone pnpm binary
+        # links against it, so without this pnpm dies at exec time with
+        # "error while loading shared libraries: libatomic.so.1". Not optional
+        # and deliberately not wrapped in soft(): a sandbox whose pnpm cannot
+        # start should fail loudly at creation, not at first use.
+        #
+        # This was masked during development because the Playwright libraries
+        # below pull libatomic1 in transitively; it only surfaced when testing
+        # SBX_DEV_TOOLS_PLAYWRIGHT=0. Keep it here rather than relying on that.
+        apt-get update -qq
+        apt-get install -y --no-install-recommends libatomic1
+
+        # --- small CLI gaps in the base image ---------------------------
+        # file(1) is not there at all, which the agent hit mid-session; xz-utils
+        # is needed for any .tar.xz, and unzip is called by a project test script.
+        # Convenience only, so a failure here is survivable.
+        soft apt-get install -y --no-install-recommends \
+          xz-utils wget file tree unzip shellcheck
+
+        # --- Node 24 ----------------------------------------------------
+        # Straight from nodejs.org rather than NodeSource: deb.nodesource.com is
+        # not in the sbx allowlist (it answers 403 through the proxy) whereas
+        # nodejs.org is. Unpacked over /usr/local, which precedes /usr/bin on
+        # PATH, so the distro's Node 22 is shadowed rather than removed; nothing
+        # in the base image is disturbed.
+        tmp="$(mktemp -d)"
+        trap 'rm -rf "$tmp"' EXIT
+        node_file="node-v${NODE_VERSION}-linux-${NODE_ARCH}.tar.gz"
+        curl -fsSL -o "$tmp/$node_file" \
+          "https://nodejs.org/dist/v${NODE_VERSION}/${node_file}"
+        curl -fsSL -o "$tmp/SHASUMS256.txt" \
+          "https://nodejs.org/dist/v${NODE_VERSION}/SHASUMS256.txt"
+
+        # Exact filename compare, not a grep pattern. Version strings are full
+        # of dots and a dot is a regex wildcard, so a pattern built for
+        # 24.20.0 also matches a row for 24X20X0; the manifest lists several
+        # artifacts per release and matching the wrong row would verify the
+        # wrong file. An absent name leaves node_sum empty and aborts, so a
+        # renamed asset stops the install rather than skipping the check.
+        node_sum=""
+        while read -r h n; do
+          if [ "$n" = "$node_file" ]; then node_sum="$h"; break; fi
+        done < "$tmp/SHASUMS256.txt"
+        [ -n "$node_sum" ] || { echo "dev-tools: $node_file absent from SHASUMS256.txt" >&2; exit 1; }
+        printf '%s  %s\n' "$node_sum" "$tmp/$node_file" | sha256sum -c - >/dev/null
+
+        tar -xzf "$tmp/$node_file" -C /usr/local --strip-components=1 \
+          --exclude=CHANGELOG.md --exclude=LICENSE --exclude=README.md
+
+        # --- pnpm -------------------------------------------------------
+        # The standalone release, which is a self-contained bundle: no corepack,
+        # no npm, nothing fetched from a package registry at install time.
+        #
+        # Corepack was the obvious route and is the wrong one. It is deprecated
+        # upstream and slated to leave the Node distribution, the image's own
+        # copy (0.24.0) is too old to fetch a modern pnpm, and reaching a usable
+        # one meant taking it from the Node tarball and then working around
+        # `corepack enable` targeting root-owned /usr/bin. pnpm has since
+        # absorbed the one feature corepack was needed for.
+        #
+        # Node still bundles its own corepack, so /usr/local/bin/corepack exists;
+        # it is left alone rather than carved out of the distribution. Nothing
+        # reaches it, because /usr/local/bin/pnpm is the symlink below.
+        #
+        # That feature is manage-package-manager-versions, on by default: pnpm
+        # reads packageManager from package.json and switches itself to that
+        # exact version, caching it under ~/.cache/pnpm. So one pinned binary
+        # still gives each project the version it asks for:
+        #
+        #   /tmp            -> 11.22.0   (PNPM_VERSION above)
+        #   league-bot      -> 11.17.0   (its packageManager)
+        #   league-service  -> 11.7.0    (its packageManager)
+        #
+        # Unpacked whole into /usr/local/lib/pnpm rather than dropping the
+        # launcher on PATH by itself: it resolves dist/pnpm.mjs relative to its
+        # own location, so the sibling dist/ tree has to come with it.
+        curl -fsSL -o "$tmp/pnpm.tar.gz" \
+          "https://github.com/pnpm/pnpm/releases/download/v${PNPM_VERSION}/pnpm-linux-${NODE_ARCH}.tar.gz"
+        printf '%s  %s\n' "$PNPM_SHA256" "$tmp/pnpm.tar.gz" | sha256sum -c - >/dev/null
+        rm -rf /usr/local/lib/pnpm
+        mkdir -p /usr/local/lib/pnpm
+        tar -xzf "$tmp/pnpm.tar.gz" -C /usr/local/lib/pnpm
+        chmod 755 /usr/local/lib/pnpm/pnpm
+        ln -sf /usr/local/lib/pnpm/pnpm /usr/local/bin/pnpm
+        # Fail creation here rather than hand back a sandbox whose pnpm is a
+        # broken symlink or is missing a shared library.
+        /usr/local/bin/pnpm --version >/dev/null
+
+        # $PNPM_HOME/bin is where pnpm puts globally installed binaries, and it
+        # errors out if that directory is not on PATH. Never run pnpm as root
+        # from inside the workspace during install: it would create the store's
+        # index.db root-owned and the agent could not write it afterwards.
+        install -d -o agent -g agent -m 755 /home/agent/.local /home/agent/.local/bin \
+          /home/agent/.cache/pnpm /home/agent/.local/state/pnpm
+
+        # --- gh ---------------------------------------------------------
+        soft sh -c "
+          set -eu
+          d=\$(mktemp -d); trap 'rm -rf \"\$d\"' EXIT
+          base=https://github.com/cli/cli/releases/download/v${GH_VERSION}
+          f=gh_${GH_VERSION}_linux_${GO_ARCH}.tar.gz
+          curl -fsSL -o \"\$d/\$f\" \"\$base/\$f\"
+          curl -fsSL -o \"\$d/sums\" \"\$base/gh_${GH_VERSION}_checksums.txt\"
+          want=''
+          while read -r h n; do
+            if [ \"\$n\" = \"\$f\" ]; then want=\$h; break; fi
+          done < \"\$d/sums\"
+          [ -n \"\$want\" ] || exit 1
+          printf '%s  %s\n' \"\$want\" \"\$d/\$f\" | sha256sum -c - >/dev/null
+          tar -xzf \"\$d/\$f\" -C \"\$d\"
+          install -m 755 \"\$d/gh_${GH_VERSION}_linux_${GO_ARCH}/bin/gh\" /usr/local/bin/gh
+        "
+
+        # --- trufflehog -------------------------------------------------
+        soft sh -c "
+          set -eu
+          d=\$(mktemp -d); trap 'rm -rf \"\$d\"' EXIT
+          base=https://github.com/trufflesecurity/trufflehog/releases/download/v${TRUFFLEHOG_VERSION}
+          f=trufflehog_${TRUFFLEHOG_VERSION}_linux_${GO_ARCH}.tar.gz
+          curl -fsSL -o \"\$d/\$f\" \"\$base/\$f\"
+          curl -fsSL -o \"\$d/sums\" \"\$base/trufflehog_${TRUFFLEHOG_VERSION}_checksums.txt\"
+          want=''
+          while read -r h n; do
+            if [ \"\$n\" = \"\$f\" ]; then want=\$h; break; fi
+          done < \"\$d/sums\"
+          [ -n \"\$want\" ] || exit 1
+          printf '%s  %s\n' \"\$want\" \"\$d/\$f\" | sha256sum -c - >/dev/null
+          tar -xzf \"\$d/\$f\" -C /usr/local/bin trufflehog
+        "
+
+        # --- Playwright system libraries --------------------------------
+        # Playwright's own package list for ubuntu26.04, read out of
+        # nativeDeps.ts at tag v1.62.1, which is what league-service pins.
+        # Installed straight from apt rather than by running
+        # `playwright install-deps`, because that means fetching the playwright
+        # package first, and there is no way to do that at sandbox-creation
+        # time under the same minimumReleaseAge policy that governs every other
+        # install here. apt packages are signed by the distro, so this route
+        # needs no such exception.
+        #
+        # Only the OS libraries. The browser itself stays a project concern:
+        # league-service's playwright:install pulls the chromium shell through
+        # its own pinned Playwright, and baking one in here would pin a second
+        # version that disagrees with it.
+        #
+        # Re-derive the list when the pinned Playwright changes:
+        #   curl -fsSL https://raw.githubusercontent.com/microsoft/playwright/v<VER>/packages/playwright-core/src/server/registry/nativeDeps.ts
+        if [ "$PLAYWRIGHT" != "0" ]; then
+          soft sh -c 'apt-get install -y --no-install-recommends \
+            libasound2t64 libatk-bridge2.0-0t64 libatk1.0-0t64 libatspi2.0-0t64 \
+            libcairo2 libcups2t64 libdbus-1-3 libdrm2 libgbm1 libglib2.0-0t64 \
+            libnspr4 libnss3 libpango-1.0-0 libx11-6 libxcb1 libxcomposite1 \
+            libxdamage1 libxext6 libxfixes3 libxkbcommon0 libxrandr2 \
+            xvfb fonts-noto-color-emoji fonts-unifont libfontconfig1 libfreetype6 \
+            xfonts-cyrillic xfonts-scalable fonts-liberation fonts-ipafont-gothic \
+            fonts-wqy-zenhei fonts-tlwg-loma-otf fonts-freefont-ttf'
+        fi
+
+        # ~/.npmrc and ~/.config/pnpm/config.yaml ship as static files, so they
+        # are already in place. Both belong to the agent, not root.
+        chown -R agent:agent /home/agent/.npmrc /home/agent/.config/pnpm 2>/dev/null || true
+
+        # Closing summary, deliberately incapable of failing. gh and
+        # trufflehog are optional, so a sandbox that did without one must not
+        # then die printing a version banner for it, and node and pnpm were
+        # already verified above where a failure is meant to abort.
+        #
+        # `gh --version | head -1` would in fact survive a missing gh on its
+        # own, because without pipefail a pipeline reports the status of its
+        # last command and head succeeds regardless. That is too subtle to rely
+        # on: anyone adding `set -o pipefail` here would turn this block into a
+        # failure path, which is exactly what soft() exists to prevent.
+        node --version || true
+        pnpm --version || true
+        gh --version 2>/dev/null | head -1 || true
+        trufflehog --version 2>&1 | head -1 || true
+
+  startup:
+    - user: "0"
+      description: Give the sandbox its own node_modules on bind-mounted workspaces
+      command:
+        - "sh"
+        - "-c"
+        - |
+          # Must never exit non-zero: /etc/durable-startup.d/run.sh stops the
+          # whole chain on the first failure, which would take out the other
+          # kits' startup commands too. The trap is armed before anything
+          # fallible runs. See claude-config-kit/spec.yaml for the same rule.
+          trap 'exit 0' EXIT
+          set -e
+
+          [ -n "${WORKSPACE_DIR:-}" ] || exit 0
+
+          # Only bind-mounted workspaces need this. A --clone sandbox already
+          # has its workspace on a container volume, so its node_modules is
+          # private already and mounting over it would only hide the clone's
+          # own files.
+          [ "$(findmnt -no FSTYPE --target "$WORKSPACE_DIR" 2>/dev/null)" = "virtiofs" ] || exit 0
+
+          # Deliberately a plain directory on the container's writable layer, not
+          # a kit volume. volumes[].path takes no size and sbx gives one 488M,
+          # which ENOSPCs partway through a real install; the overlay has ~18G.
+          # The lifecycle is the one we want anyway: it survives stop/start and
+          # dies with `sbx rm`, exactly like the rest of the container.
+          STORE=/var/lib/sbx-dev-tools
+          mkdir -p "$STORE"
+
+          # The workspace is the host's checkout, so its node_modules holds
+          # macOS binaries: @esbuild/darwin-arm64, @turbo/darwin-arm64,
+          # lightningcss-darwin-arm64 and friends. Linux cannot run them, so
+          # every install in here re-resolved the whole tree over virtiofs and
+          # wrote the result back onto the host, corrupting it in both
+          # directions. Each of these directories gets a private ext4 directory
+          # instead: the host tree is untouched and invisible, and the agent
+          # gets a normal Linux install.
+          #
+          # .pnpm-store is in the list for a second reason. pnpm hardlinks out
+          # of the store into node_modules, which only works within one
+          # filesystem; leaving the store on virtiofs while node_modules moved
+          # to the overlay turned every package into a full copy, which is both
+          # slow and what actually exhausted the space. Mounting both from the
+          # same place restores hardlinking.
+          #
+          # Every node_modules in the workspace, not just the root one, because
+          # a pnpm workspace puts a symlink farm in each package and pnpm
+          # rewrites those on install.
+          #
+          # The candidate list is derived from committed package.json files, not
+          # only from directories that already exist. Mounting solely over
+          # existing node_modules works on a checkout that has been installed
+          # before and silently does nothing on a clean clone, where there is no
+          # node_modules yet: the isolation would cover nothing, and the first
+          # install writes onto the host tree. In practice it does not even get
+          # that far, because pnpm creates .pnpm-store and then fails ENOENT
+          # against the bind mount. A package.json is committed, so it is there
+          # either way and marks where a node_modules is going to appear.
+          #
+          # Existing directories are unioned in to catch any with no
+          # package.json beside them. Depth 4 covers packages/<name>/ and the
+          # .claude/worktrees/<name>/ trees; -prune keeps the search out of the
+          # node_modules trees themselves.
+          #
+          # Built up in a temp file rather than a brace group piped into the
+          # loop. sbx materialises a startup command as a triple-nested
+          # single-quoted string (dispatcher -> su -c -> sh -c), and a group
+          # containing its own while loop does not survive that escaping: the
+          # script dies before its first statement and the dispatcher still
+          # logs "ok", because the EXIT trap forces status 0. Flat commands and
+          # redirections come through intact.
+          LIST=$(mktemp)
+          MANIFESTS=$(mktemp)
+
+          find "$WORKSPACE_DIR" -maxdepth 4 -name node_modules -prune \
+               -o -name package.json -type f -print > "$MANIFESTS" 2>/dev/null || true
+
+          while IFS= read -r manifest; do
+            echo "${manifest%/package.json}/node_modules" >> "$LIST"
+          done < "$MANIFESTS"
+
+          echo "$WORKSPACE_DIR/.pnpm-store" >> "$LIST"
+
+          find "$WORKSPACE_DIR" -maxdepth 4 \
+               \( -name node_modules -o -name .pnpm-store \) -type d -prune \
+               >> "$LIST" 2>/dev/null || true
+
+          sort -u "$LIST" > "$MANIFESTS"
+
+          while IFS= read -r dir; do
+            # A bind mount needs its mountpoint to exist, and on a clean
+            # checkout it does not, so create it first. An empty directory is
+            # all the host ever sees, rather than a Linux install. It outlives
+            # `sbx rm`, where a later host-side install simply fills it in.
+            #
+            # This has to come before the filesystem test below, not after:
+            # `findmnt --target` prints nothing for a path that does not exist
+            # (it does not fall back to the parent mount), so testing first
+            # skips every candidate that has yet to be created, which on a
+            # clean checkout is all of them.
+            [ -d "$dir" ] || mkdir -p "$dir" 2>/dev/null || continue
+
+            # Idempotent: startup commands re-run on every container start, and
+            # a second bind mount over the same path would just stack. Anything
+            # already isolated reads as overlay rather than virtiofs and is
+            # skipped here.
+            [ "$(findmnt -no FSTYPE --target "$dir" 2>/dev/null)" = "virtiofs" ] || continue
+
+            rel=$(echo "${dir#"$WORKSPACE_DIR"/}" | tr / _)
+            [ -n "$rel" ] || rel=root
+
+            back="$STORE/$rel"
+            mkdir -p "$back"
+            chown agent:agent "$back"
+
+            mount --bind "$back" "$dir" 2>/dev/null || true
+          done < "$MANIFESTS"
+
+          rm -f "$LIST" "$MANIFESTS"

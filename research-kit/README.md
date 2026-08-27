@@ -2,7 +2,7 @@
 
 An [sbx](https://docs.docker.com/ai/sandboxes/) **mixin kit** that opens full
 network egress for sandboxes used purely for research and planning. It stacks
-with `claude-config-kit` rather than replacing it.
+with `claude-config-kit` and `dev-tools-kit` rather than replacing them.
 
 Not meant to be applied by hand. `bin/research-sandbox.sh` combines it with the
 other two mechanisms that make it safe:
@@ -23,6 +23,27 @@ filesystem". Three do, and they are independent:
 | No host filesystem | `--clone` | launcher flag |
 | Which repos GitHub-wise | fine-grained PAT, sandbox-scoped | `sbx secret set --sandbox` |
 | Which branches | repository ruleset | GitHub, not sbx |
+| Package install policy | `minimumReleaseAge` and friends | [`dev-tools-kit`](../dev-tools-kit/) |
+
+### Why the toolchain kit rides along
+
+`bin/research-sandbox.sh` also passes [`dev-tools-kit`](../dev-tools-kit/), for
+two reasons.
+
+Research leans on pnpm: `pnpm view` and `pnpm why` are how you answer a question
+about a dependency, and the base image has no pnpm at all.
+
+The second reason matters more. `dev-tools-kit` is what carries
+`minimumReleaseAge`, `minimumReleaseAgeStrict` and `blockExoticSubdeps` into a
+sandbox. Without it, the one sandbox with unrestricted egress reading untrusted
+web content would also be the only one installing packages with no release-age
+window, which is precisely backwards.
+
+The launcher passes `-e SBX_DEV_TOOLS_PLAYWRIGHT=0`, halving creation time
+(roughly 30s to 15s) by skipping browser system libraries that research work
+does not use. That kit's `node_modules` isolation is inert here: it only acts on
+bind-mounted (virtiofs) paths, and a `--clone` workspace is already on a
+container volume.
 
 ### Network
 

@@ -22,6 +22,16 @@
 #              inherits the global token. The secret is staged before creation,
 #              so the broad token is never injected even briefly.
 #
+# dev-tools-kit rides along for two reasons. The obvious one is that research
+# leans on pnpm: `pnpm view` and `pnpm why` are how you answer a question about
+# a dependency, and the base image has no pnpm at all. The less obvious one
+# matters more. dev-tools-kit is what carries minimumReleaseAge,
+# minimumReleaseAgeStrict and blockExoticSubdeps into a sandbox; without it,
+# the one sandbox with unrestricted egress reading untrusted web content is
+# also the only one installing packages with no release-age window. Its
+# node_modules isolation is inert here, since that only acts on bind-mounted
+# (virtiofs) paths and a --clone workspace is already on a container volume.
+#
 # GitHub tokens have no branch granularity: a token that can push at all can
 # push anywhere in the repos it covers. What actually stops a push to the
 # default branch is a repository ruleset carrying the `pull_request` rule with
@@ -48,6 +58,7 @@ while [[ -L "$SELF" ]]; do
 done
 REPO_DIR="$(cd -- "$(dirname -- "$SELF")/.." && pwd -P)"
 CONFIG_KIT="$REPO_DIR/claude-config-kit"
+DEV_TOOLS_KIT="$REPO_DIR/dev-tools-kit"
 RESEARCH_KIT="$REPO_DIR/research-kit"
 SEED_ROOT="${RESEARCH_SEED_ROOT:-$HOME/.local/state/sbx-research}"
 TOKEN_REF="${RESEARCH_GH_TOKEN_REF:-}"
@@ -128,6 +139,21 @@ done
 
 command -v sbx >/dev/null 2>&1 || die "sbx is not installed"
 command -v git >/dev/null 2>&1 || die "git is not installed"
+
+# Defined here, above --destroy, because that is the first caller. It used to
+# live beside rollback() further down, which --destroy never reaches: it exits
+# before that point, so the call resolved to nothing. `if` exempts its own
+# condition from set -e, so the 127 became a plain false and the destroy path
+# reported "no scoped secret left behind" without ever having looked. Keep this
+# above both callers.
+#
+# Exact string compare rather than a regex: sandbox names may contain periods
+# and plus signs, which are ERE metacharacters. "a+b" as a pattern means "one
+# or more a, then b" and would not match the literal scope "a+b", so the
+# post-delete check would report a credential gone while it was still stored.
+secret_present() {
+  sbx secret ls 2>/dev/null | awk -v n="$NAME" 'NR > 1 && $1 == n { found = 1 } END { exit !found }'
+}
 
 # --- destroy ----------------------------------------------------------------
 
@@ -230,9 +256,11 @@ SEED="$SEED_ROOT/$NAME"
 # --- preflight --------------------------------------------------------------
 
 step "Preflight"
-[[ -d "$CONFIG_KIT" ]]   || die "missing kit: $CONFIG_KIT"
-[[ -d "$RESEARCH_KIT" ]] || die "missing kit: $RESEARCH_KIT"
+[[ -d "$CONFIG_KIT" ]]    || die "missing kit: $CONFIG_KIT"
+[[ -d "$DEV_TOOLS_KIT" ]] || die "missing kit: $DEV_TOOLS_KIT"
+[[ -d "$RESEARCH_KIT" ]]  || die "missing kit: $RESEARCH_KIT"
 note "kits      $CONFIG_KIT"
+note "          $DEV_TOOLS_KIT"
 note "          $RESEARCH_KIT"
 note "repo      $owner/$repo"
 note "sandbox   $NAME"
@@ -340,14 +368,6 @@ fi
 # that does not exist, and it would silently apply to any later sandbox that
 # reused the name. That is the exact hazard --destroy exists to prevent, so it
 # must not be reachable by simply having creation fail.
-# Exact string compare rather than a regex: sandbox names may contain periods
-# and plus signs, which are ERE metacharacters. "a+b" as a pattern means "one
-# or more a, then b" and would not match the literal scope "a+b", so the
-# post-delete check would report a credential gone while it was still stored.
-secret_present() {
-  sbx secret ls 2>/dev/null | awk -v n="$NAME" 'NR > 1 && $1 == n { found = 1 } END { exit !found }'
-}
-
 rollback() {
   printf '\n'
   step "Creation failed, rolling back"
@@ -374,8 +394,13 @@ rollback() {
 
 printf '\n'
 step "Creating sandbox"
+# SBX_DEV_TOOLS_PLAYWRIGHT=0 halves the creation time (roughly 30s to 15s) by
+# skipping the browser system libraries. Research sandboxes read and reason
+# about code; they do not drive a browser.
 if ! run sbx create claude --clone --name "$NAME" \
+  -e SBX_DEV_TOOLS_PLAYWRIGHT=0 \
   --kit "$CONFIG_KIT" \
+  --kit "$DEV_TOOLS_KIT" \
   --kit "$RESEARCH_KIT" \
   "$SEED"; then
   rollback
