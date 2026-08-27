@@ -82,9 +82,13 @@ setup:
         export DEBIAN_FRONTEND=noninteractive
         export PATH="/usr/local/bin:$PATH"
 
+        # Selects the pnpm hash by name rather than by building a variable
+        # reference and eval-ing it. NODE_ARCH is constrained to two values
+        # right here so the eval was not reachable with anything hostile, but
+        # this runs as root and a case statement costs nothing.
         case "$(dpkg --print-architecture)" in
-          arm64) NODE_ARCH=arm64; GO_ARCH=arm64 ;;
-          amd64) NODE_ARCH=x64;   GO_ARCH=amd64 ;;
+          arm64) NODE_ARCH=arm64; GO_ARCH=arm64; PNPM_SHA256="$PNPM_SHA256_arm64" ;;
+          amd64) NODE_ARCH=x64;   GO_ARCH=amd64; PNPM_SHA256="$PNPM_SHA256_x64" ;;
           *) echo "dev-tools: unsupported architecture $(dpkg --print-architecture)" >&2; exit 1 ;;
         esac
 
@@ -94,6 +98,14 @@ setup:
         soft() {
           "$@" || echo "dev-tools: optional step failed: $*" >&2
         }
+
+        # The optional installers below stay as `sh -c` blocks rather than
+        # becoming shell functions. set -e is suppressed for a command on the
+        # left of ||, and that suppression reaches into a function body: a
+        # `soft install_gh` whose first curl failed would carry on to the
+        # install step and put a truncated binary on PATH. It does not reach
+        # into a separate shell process, so `sh -c` with its own set -eu is
+        # what makes each block abort at the first failure and report once.
 
         # --- required system packages -----------------------------------
         # libatomic1 is not in the base image and the standalone pnpm binary
@@ -123,13 +135,26 @@ setup:
         # in the base image is disturbed.
         tmp="$(mktemp -d)"
         trap 'rm -rf "$tmp"' EXIT
-        curl -fsSL -o "$tmp/node.tar.gz" \
-          "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-${NODE_ARCH}.tar.gz"
+        node_file="node-v${NODE_VERSION}-linux-${NODE_ARCH}.tar.gz"
+        curl -fsSL -o "$tmp/$node_file" \
+          "https://nodejs.org/dist/v${NODE_VERSION}/${node_file}"
         curl -fsSL -o "$tmp/SHASUMS256.txt" \
           "https://nodejs.org/dist/v${NODE_VERSION}/SHASUMS256.txt"
-        ( cd "$tmp" && grep " node-v${NODE_VERSION}-linux-${NODE_ARCH}.tar.gz\$" SHASUMS256.txt \
-            | sed 's| .*| node.tar.gz|' | sha256sum -c - >/dev/null )
-        tar -xzf "$tmp/node.tar.gz" -C /usr/local --strip-components=1 \
+
+        # Exact filename compare, not a grep pattern. Version strings are full
+        # of dots and a dot is a regex wildcard, so a pattern built for
+        # 24.20.0 also matches a row for 24X20X0; the manifest lists several
+        # artifacts per release and matching the wrong row would verify the
+        # wrong file. An absent name leaves node_sum empty and aborts, so a
+        # renamed asset stops the install rather than skipping the check.
+        node_sum=""
+        while read -r h n; do
+          if [ "$n" = "$node_file" ]; then node_sum="$h"; break; fi
+        done < "$tmp/SHASUMS256.txt"
+        [ -n "$node_sum" ] || { echo "dev-tools: $node_file absent from SHASUMS256.txt" >&2; exit 1; }
+        printf '%s  %s\n' "$node_sum" "$tmp/$node_file" | sha256sum -c - >/dev/null
+
+        tar -xzf "$tmp/$node_file" -C /usr/local --strip-components=1 \
           --exclude=CHANGELOG.md --exclude=LICENSE --exclude=README.md
 
         # --- pnpm -------------------------------------------------------
@@ -159,10 +184,9 @@ setup:
         # Unpacked whole into /usr/local/lib/pnpm rather than dropping the
         # launcher on PATH by itself: it resolves dist/pnpm.mjs relative to its
         # own location, so the sibling dist/ tree has to come with it.
-        eval "expected=\$PNPM_SHA256_${NODE_ARCH}"
         curl -fsSL -o "$tmp/pnpm.tar.gz" \
           "https://github.com/pnpm/pnpm/releases/download/v${PNPM_VERSION}/pnpm-linux-${NODE_ARCH}.tar.gz"
-        printf '%s  %s\n' "$expected" "$tmp/pnpm.tar.gz" | sha256sum -c - >/dev/null
+        printf '%s  %s\n' "$PNPM_SHA256" "$tmp/pnpm.tar.gz" | sha256sum -c - >/dev/null
         rm -rf /usr/local/lib/pnpm
         mkdir -p /usr/local/lib/pnpm
         tar -xzf "$tmp/pnpm.tar.gz" -C /usr/local/lib/pnpm
@@ -184,11 +208,16 @@ setup:
           set -eu
           d=\$(mktemp -d); trap 'rm -rf \"\$d\"' EXIT
           base=https://github.com/cli/cli/releases/download/v${GH_VERSION}
-          curl -fsSL -o \"\$d/gh.tar.gz\" \"\$base/gh_${GH_VERSION}_linux_${GO_ARCH}.tar.gz\"
+          f=gh_${GH_VERSION}_linux_${GO_ARCH}.tar.gz
+          curl -fsSL -o \"\$d/\$f\" \"\$base/\$f\"
           curl -fsSL -o \"\$d/sums\" \"\$base/gh_${GH_VERSION}_checksums.txt\"
-          ( cd \"\$d\" && grep \"gh_${GH_VERSION}_linux_${GO_ARCH}.tar.gz\$\" sums \
-              | sed 's|gh_.*|gh.tar.gz|' | sha256sum -c - >/dev/null )
-          tar -xzf \"\$d/gh.tar.gz\" -C \"\$d\"
+          want=''
+          while read -r h n; do
+            if [ \"\$n\" = \"\$f\" ]; then want=\$h; break; fi
+          done < \"\$d/sums\"
+          [ -n \"\$want\" ] || exit 1
+          printf '%s  %s\n' \"\$want\" \"\$d/\$f\" | sha256sum -c - >/dev/null
+          tar -xzf \"\$d/\$f\" -C \"\$d\"
           install -m 755 \"\$d/gh_${GH_VERSION}_linux_${GO_ARCH}/bin/gh\" /usr/local/bin/gh
         "
 
@@ -197,11 +226,16 @@ setup:
           set -eu
           d=\$(mktemp -d); trap 'rm -rf \"\$d\"' EXIT
           base=https://github.com/trufflesecurity/trufflehog/releases/download/v${TRUFFLEHOG_VERSION}
-          curl -fsSL -o \"\$d/th.tar.gz\" \"\$base/trufflehog_${TRUFFLEHOG_VERSION}_linux_${GO_ARCH}.tar.gz\"
+          f=trufflehog_${TRUFFLEHOG_VERSION}_linux_${GO_ARCH}.tar.gz
+          curl -fsSL -o \"\$d/\$f\" \"\$base/\$f\"
           curl -fsSL -o \"\$d/sums\" \"\$base/trufflehog_${TRUFFLEHOG_VERSION}_checksums.txt\"
-          ( cd \"\$d\" && grep \"trufflehog_${TRUFFLEHOG_VERSION}_linux_${GO_ARCH}.tar.gz\$\" sums \
-              | sed 's|trufflehog_.*|th.tar.gz|' | sha256sum -c - >/dev/null )
-          tar -xzf \"\$d/th.tar.gz\" -C /usr/local/bin trufflehog
+          want=''
+          while read -r h n; do
+            if [ \"\$n\" = \"\$f\" ]; then want=\$h; break; fi
+          done < \"\$d/sums\"
+          [ -n \"\$want\" ] || exit 1
+          printf '%s  %s\n' \"\$want\" \"\$d/\$f\" | sha256sum -c - >/dev/null
+          tar -xzf \"\$d/\$f\" -C /usr/local/bin trufflehog
         "
 
         # --- Playwright system libraries --------------------------------
