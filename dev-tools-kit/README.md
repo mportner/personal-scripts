@@ -110,10 +110,12 @@ settings to `pnpm-workspace.yaml`. Everything else, a scratch install, a
 `pnpm dlx`, a repository that has not adopted the policy yet, runs on pnpm's
 permissive defaults.
 
-Nothing this kit installs goes through npm, npx or corepack, and nothing floats.
-Every fetch is a pinned version checked against a checksum, either the
-publisher's own manifest or, for pnpm, a hash pinned in `spec.yaml`; the rest
-are apt packages signed by the distro. That constraint is why the
+Nothing this kit installs goes through npm, npx or corepack. The four tools it
+downloads directly (Node, pnpm, `gh`, trufflehog) are pinned to exact versions
+and checked against a checksum, either the publisher's own manifest or, for
+pnpm, a hash pinned in `spec.yaml`. Everything else is an apt package: signed
+by the distro and versioned by it, so those track the Ubuntu repository rather
+than a pin here. That constraint is why the
 Playwright system libraries are apt-installed from Playwright's own list rather
 than by running `playwright install-deps`: reaching that command means fetching
 the playwright package first, at creation time, with no way to apply the

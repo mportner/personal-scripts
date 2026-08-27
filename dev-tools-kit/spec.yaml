@@ -23,9 +23,10 @@
 # It also carries the host's supply-chain policy in, which the sandbox
 # otherwise lacks: minimumReleaseAge, minimumReleaseAgeStrict and
 # blockExoticSubdeps applied globally rather than only inside repositories that
-# commit them. Every fetch this kit performs is either a pinned version checked
-# against the publisher's own checksum manifest, or an apt package signed by
-# the distro. Nothing floats, and nothing runs through npm or npx.
+# commit them. Every direct download is a pinned version checked against the
+# publisher's own checksum manifest; the supporting packages come from apt,
+# signed by the distro and versioned by it rather than pinned here. Nothing
+# runs through npm or npx.
 #
 # Roughly 30s at sandbox creation, most of it the Playwright system libraries;
 # about 15s with SBX_DEV_TOOLS_PLAYWRIGHT=0 (see below) to skip those. Measured
