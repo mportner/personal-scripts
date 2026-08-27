@@ -270,9 +270,20 @@ setup:
         # are already in place. Both belong to the agent, not root.
         chown -R agent:agent /home/agent/.npmrc /home/agent/.config/pnpm 2>/dev/null || true
 
-        node --version
+        # Closing summary, deliberately incapable of failing. gh and
+        # trufflehog are optional, so a sandbox that did without one must not
+        # then die printing a version banner for it, and node and pnpm were
+        # already verified above where a failure is meant to abort.
+        #
+        # `gh --version | head -1` would in fact survive a missing gh on its
+        # own, because without pipefail a pipeline reports the status of its
+        # last command and head succeeds regardless. That is too subtle to rely
+        # on: anyone adding `set -o pipefail` here would turn this block into a
+        # failure path, which is exactly what soft() exists to prevent.
+        node --version || true
         pnpm --version || true
-        gh --version | head -1
+        gh --version 2>/dev/null | head -1 || true
+        trufflehog --version 2>&1 | head -1 || true
 
   startup:
     - user: "0"

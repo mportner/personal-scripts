@@ -45,9 +45,23 @@ fi
 # globsubst` a path containing glob metacharacters triggers filename generation
 # and NOMATCH kills the whole function. Neither happens with stock options, but
 # neither costs anything to prevent.
+# Flags that consume the following argument. Needed to find where the agent
+# name actually sits: without this, `sbx run --name claude` (a sandbox that
+# happens to be called claude) reads its own name as the agent and gets kits
+# injected into an invocation that never mentioned the agent at all.
+#
+# Taken from `sbx run --help`. A flag missing from this list only costs a
+# false negative (kits not injected), never a wrong injection, because an
+# unrecognised flag's value is then tested as the agent name and almost
+# certainly is not "claude".
+SBX_VALUED_FLAGS=(
+  --cpus --deny-network --env -e --env-file --kit --memory -m
+  --name --profile --publish -p --static-mcp --template -t
+)
+
 sbx() {
   local arg kit
-  local -i inject=0
+  local -i inject=0 i=2
   local -a kit_args
 
   # Only run/create take --kit, and the kits write ~/.claude and the workspace,
@@ -55,15 +69,31 @@ sbx() {
   # straight through.
   case "$1" in
     run|create)
-      for arg in "$@"; do
+      # Pass 1: did the caller ask for a kit themselves? Scanned over every
+      # argument rather than stopping at the agent, because sbx accepts flags
+      # on either side of it.
+      for arg in "${@:2}"; do
         case "$arg" in
-          # Already asked for a kit explicitly: respect that, add nothing.
-          --kit|--kit=*) inject=-1 ;;
-          # "--" ends sbx's own args; anything after belongs to the agent.
           --) break ;;
-          claude) (( inject >= 0 )) && inject=1 ;;
+          --kit|--kit=*) inject=-1 ;;
         esac
       done
+
+      # Pass 2: locate the agent, which is the first argument that is neither
+      # a flag nor the value of one.
+      if (( inject == 0 )); then
+        while (( i <= $# )); do
+          arg="${argv[i]}"
+          case "$arg" in
+            --) break ;;
+            --*=*) ;;
+            -*) (( ${SBX_VALUED_FLAGS[(Ie)$arg]} )) && (( i++ )) ;;
+            claude) inject=1; break ;;
+            *) break ;;
+          esac
+          (( i++ ))
+        done
+      fi
       ;;
   esac
 
