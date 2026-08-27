@@ -1,0 +1,16 @@
+# Copied verbatim from the host's global pnpm config
+# (~/Library/Preferences/pnpm/config.yaml on macOS, this path on Linux) so a
+# sandbox enforces the same supply-chain policy as the machine it runs on.
+#
+# Without this the sandbox is hardened only inside repositories that commit
+# these settings to pnpm-workspace.yaml. Everything else -- a scratch install,
+# a `pnpm dlx`, a repository that has not adopted the policy yet -- runs with
+# pnpm's permissive defaults.
+#
+# minimumReleaseAge:       7200 minutes (5 days) before a published version may
+#                          be installed, which blunts compromised-release attacks
+# minimumReleaseAgeStrict: no soft fallback when the window is not met
+# blockExoticSubdeps:      reject non-registry (git, tarball, ...) transitive deps
+blockExoticSubdeps: true
+minimumReleaseAge: 7200
+minimumReleaseAgeStrict: true

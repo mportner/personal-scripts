@@ -5,11 +5,11 @@
 #
 # Copyright (c) 2026 Michael Portner
 #
-# Auto-applies the claude-config kit to new claude sandboxes.
+# Auto-applies this repo's kits to new claude sandboxes.
 #
 # sbx has no config file or env var for a default kit; --kit is a per-invocation
-# flag applied at creation time. This wrapper supplies it so `sbx run claude`
-# and `sbx create claude` behave as if it were the default.
+# flag applied at creation time. This wrapper supplies them so `sbx run claude`
+# and `sbx create claude` behave as if they were the default.
 #
 # This file defines a shell function, so it must be SOURCED, not executed. That
 # is why it lives in shell/ rather than bin/, and why it has no shebang and is
@@ -24,15 +24,28 @@
 # current code, which is correct when sourced; :A makes it absolute and
 # resolves symlinks, :h takes the dirname. Twice, to reach the repo root.
 SBX_KIT_WRAPPER_DIR="${${(%):-%x}:A:h}"
-SBX_DEFAULT_KIT="${SBX_DEFAULT_KIT:-${SBX_KIT_WRAPPER_DIR:h}/claude-config-kit}"
+
+# Order matters: kits compose in --kit order, and dev-tools' startup command
+# assumes claude-config has already had its turn at ~/.claude/settings.json.
+#
+# Override by setting SBX_DEFAULT_KITS before sourcing this file, e.g. to run
+# without the toolchain kit:
+#     SBX_DEFAULT_KITS=(~/personal-scripts/claude-config-kit)
+if (( ! ${+SBX_DEFAULT_KITS} )); then
+  SBX_DEFAULT_KITS=(
+    "${SBX_KIT_WRAPPER_DIR:h}/claude-config-kit"
+    "${SBX_KIT_WRAPPER_DIR:h}/dev-tools-kit"
+  )
+fi
 
 sbx() {
-  local kit="$SBX_DEFAULT_KIT"
-  local arg
+  local arg kit
   local -i inject=0
+  local -a kit_args
 
-  # Only run/create take --kit, and the kit writes ~/.claude, so it is only
-  # meaningful for the claude agent. Anything else passes straight through.
+  # Only run/create take --kit, and the kits write ~/.claude and the workspace,
+  # so they are only meaningful for the claude agent. Anything else passes
+  # straight through.
   case "$1" in
     run|create)
       for arg in "$@"; do
@@ -47,16 +60,21 @@ sbx() {
       ;;
   esac
 
-  # Say so rather than quietly dropping the kit. Silently running without it
-  # looks identical to running with it until you notice the status line is
-  # missing and the settings never applied.
-  if (( inject == 1 )) && [[ ! -d "$kit" ]]; then
-    print -u2 "sbx-kit-wrapper: no kit at $kit, running without --kit"
-    inject=0
+  if (( inject == 1 )); then
+    for kit in $SBX_DEFAULT_KITS; do
+      # Say so rather than quietly dropping a kit. Silently running without one
+      # looks identical to running with it until you notice the status line is
+      # missing, or that the agent is back to hand-rolling a pnpm shim.
+      if [[ -d "$kit" ]]; then
+        kit_args+=(--kit "$kit")
+      else
+        print -u2 "sbx-kit-wrapper: no kit at $kit, continuing without it"
+      fi
+    done
   fi
 
-  if (( inject == 1 )); then
-    command sbx "$1" --kit "$kit" "${@:2}"
+  if (( $#kit_args )); then
+    command sbx "$1" $kit_args "${@:2}"
   else
     command sbx "$@"
   fi

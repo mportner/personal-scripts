@@ -11,8 +11,11 @@ stock system with no interpreter to install first.
 | Path | What it is |
 | --- | --- |
 | [`bin/brew-upgrade-safe.sh`](bin/brew-upgrade-safe.sh) | `brew upgrade` that holds casks back until a release has soaked upstream |
-| [`shell/sbx-kit-wrapper.zsh`](shell/sbx-kit-wrapper.zsh) | zsh wrapper making a default `--kit` apply to `sbx run claude` |
+| [`bin/research-sandbox.sh`](bin/research-sandbox.sh) | launcher for isolated research sandboxes with open egress and a narrowly scoped GitHub token |
+| [`shell/sbx-kit-wrapper.zsh`](shell/sbx-kit-wrapper.zsh) | zsh wrapper making the default `--kit` set apply to `sbx run claude` |
 | [`claude-config-kit/`](claude-config-kit/) | an [sbx](https://docs.docker.com/ai/sandboxes/) mixin kit carrying a Claude Code status line and settings into every sandbox |
+| [`dev-tools-kit/`](dev-tools-kit/) | sbx mixin kit installing Node 24, pnpm, gh and the projects' supply-chain policy |
+| [`research-kit/`](research-kit/) | sbx mixin kit opening full network egress for research and planning sandboxes |
 | [`setup.sh`](setup.sh) | installer: symlinks `bin/`, sources `shell/` |
 | [`uninstall.sh`](uninstall.sh) | reverses `setup.sh` |
 
@@ -82,8 +85,8 @@ keep the rest, re-run `./setup.sh --no-sandbox` instead.
 - [`gh`](https://cli.github.com), optional: `brew-upgrade-safe` uses it for an
   authenticated GitHub API rate limit (5000/hr rather than 60/hr), which matters
   because it makes one API call per gated package
-- [`sbx`](https://docs.docker.com/ai/sandboxes/), optional: only for
-  `claude-config-kit` and the wrapper
+- [`sbx`](https://docs.docker.com/ai/sandboxes/), optional: only for the kits,
+  the wrapper and `research-sandbox`
 
 ## The scripts
 
@@ -125,18 +128,50 @@ spec reference.
 > `claude-config-kit/files/home/.claude-config-kit/settings.json`; the status
 > line and every other setting work without them.
 
+### `dev-tools-kit`
+
+An sbx mixin kit that installs the toolchain these projects expect, so the agent
+never has to install its own. The stock image ships Node 22, no pnpm and gh
+2.46, while the projects want Node 24 and a pnpm pinned per repository through
+`packageManager`; sessions used to open with the agent hitting `EACCES` from
+`corepack enable` and hand-rolling a pnpm shim in its scratch directory. In one
+measured transcript that took 27 of 89 bash calls.
+
+pnpm comes from its standalone release with a pinned sha256, not from corepack
+or npm, and its own `manage-package-manager-versions` gives each project the
+version its `packageManager` field asks for.
+
+It also carries the host's supply-chain policy in (`minimumReleaseAge`,
+`minimumReleaseAgeStrict`, `blockExoticSubdeps`) rather than leaving it to
+whichever repositories happen to commit those settings, and gives the sandbox a
+private `node_modules` so a Linux install stops fighting the host's macOS one
+over the bind mount. See its [README](dev-tools-kit/README.md).
+
+Adds about 30s to sandbox creation, most of it Playwright's system libraries;
+`-e SBX_DEV_TOOLS_PLAYWRIGHT=0` skips those and brings it down to about 15s.
+
+Applied to every sandbox the wrapper creates, and by `research-sandbox` with
+Playwright skipped. Research sandboxes get it mainly for the supply-chain
+policy: they are the ones with unrestricted egress, so they are the last place
+that should be installing packages with no release-age window.
+
 ### `sbx-kit-wrapper.zsh`
 
 `sbx` has no config file or environment variable for a default kit; `--kit` is a
-per-invocation flag. This wrapper supplies it, so `sbx run claude` behaves as if
-`claude-config-kit` were the default. Anything that is not `run`/`create`, and
-any invocation that already passes `--kit`, is passed straight through
-untouched.
+per-invocation flag. This wrapper supplies `claude-config-kit` and
+`dev-tools-kit`, so `sbx run claude` behaves as if they were the default.
+Anything that is not `run`/`create`, and any invocation that already passes
+`--kit`, is passed straight through untouched.
 
-The kit path is resolved from the fragment's own location, so the repo works
-wherever you clone it. Override with `SBX_DEFAULT_KIT` before sourcing. If the
-kit directory is missing it warns and runs `sbx` unmodified, rather than
-silently dropping the flag.
+Kit paths are resolved from the fragment's own location, so the repo works
+wherever you clone it. Override with `SBX_DEFAULT_KITS` before sourcing:
+
+```zsh
+SBX_DEFAULT_KITS=(~/personal-scripts/claude-config-kit)   # skip the toolchain kit
+```
+
+If a kit directory is missing it warns and continues without that one, rather
+than silently dropping the flag.
 
 This is the one piece `./setup.sh --no-sandbox` leaves out.
 
