@@ -288,21 +288,75 @@ setup:
           #
           # Every node_modules in the workspace, not just the root one, because
           # a pnpm workspace puts a symlink farm in each package and pnpm
-          # rewrites those on install. Depth 4 covers packages/<name>/ and the
+          # rewrites those on install.
+          #
+          # The candidate list is derived from committed package.json files, not
+          # only from directories that already exist. Mounting solely over
+          # existing node_modules works on a checkout that has been installed
+          # before and silently does nothing on a clean clone, where there is no
+          # node_modules yet: the isolation would cover nothing, and the first
+          # install writes onto the host tree. In practice it does not even get
+          # that far, because pnpm creates .pnpm-store and then fails ENOENT
+          # against the bind mount. A package.json is committed, so it is there
+          # either way and marks where a node_modules is going to appear.
+          #
+          # Existing directories are unioned in to catch any with no
+          # package.json beside them. Depth 4 covers packages/<name>/ and the
           # .claude/worktrees/<name>/ trees; -prune keeps the search out of the
-          # directories themselves.
+          # node_modules trees themselves.
+          #
+          # Built up in a temp file rather than a brace group piped into the
+          # loop. sbx materialises a startup command as a triple-nested
+          # single-quoted string (dispatcher -> su -c -> sh -c), and a group
+          # containing its own while loop does not survive that escaping: the
+          # script dies before its first statement and the dispatcher still
+          # logs "ok", because the EXIT trap forces status 0. Flat commands and
+          # redirections come through intact.
+          LIST=$(mktemp)
+          MANIFESTS=$(mktemp)
+
+          find "$WORKSPACE_DIR" -maxdepth 4 -name node_modules -prune \
+               -o -name package.json -type f -print > "$MANIFESTS" 2>/dev/null || true
+
+          while IFS= read -r manifest; do
+            echo "${manifest%/package.json}/node_modules" >> "$LIST"
+          done < "$MANIFESTS"
+
+          echo "$WORKSPACE_DIR/.pnpm-store" >> "$LIST"
+
           find "$WORKSPACE_DIR" -maxdepth 4 \
-               \( -name node_modules -o -name .pnpm-store \) -type d -prune 2>/dev/null |
+               \( -name node_modules -o -name .pnpm-store \) -type d -prune \
+               >> "$LIST" 2>/dev/null || true
+
+          sort -u "$LIST" > "$MANIFESTS"
+
           while IFS= read -r dir; do
+            # A bind mount needs its mountpoint to exist, and on a clean
+            # checkout it does not, so create it first. An empty directory is
+            # all the host ever sees, rather than a Linux install. It outlives
+            # `sbx rm`, where a later host-side install simply fills it in.
+            #
+            # This has to come before the filesystem test below, not after:
+            # `findmnt --target` prints nothing for a path that does not exist
+            # (it does not fall back to the parent mount), so testing first
+            # skips every candidate that has yet to be created, which on a
+            # clean checkout is all of them.
+            [ -d "$dir" ] || mkdir -p "$dir" 2>/dev/null || continue
+
             # Idempotent: startup commands re-run on every container start, and
-            # a second bind mount over the same path would just stack.
+            # a second bind mount over the same path would just stack. Anything
+            # already isolated reads as overlay rather than virtiofs and is
+            # skipped here.
             [ "$(findmnt -no FSTYPE --target "$dir" 2>/dev/null)" = "virtiofs" ] || continue
 
-            rel="$(printf '%s' "${dir#"$WORKSPACE_DIR"/}" | tr '/' '_')"
+            rel=$(echo "${dir#"$WORKSPACE_DIR"/}" | tr / _)
             [ -n "$rel" ] || rel=root
 
             back="$STORE/$rel"
             mkdir -p "$back"
             chown agent:agent "$back"
+
             mount --bind "$back" "$dir" 2>/dev/null || true
-          done
+          done < "$MANIFESTS"
+
+          rm -f "$LIST" "$MANIFESTS"
