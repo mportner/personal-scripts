@@ -185,8 +185,8 @@ Host tree afterwards: 7 darwin packages, 0 linux, lockfile unchanged.
 
 ## Cost
 
-About 31s at sandbox creation, most of it the Playwright system libraries.
-Skip them with:
+About 30s at sandbox creation, most of it the Playwright system libraries, and
+about 15s without them. Skip them with:
 
 ```bash
 sbx create ... -e SBX_DEV_TOOLS_PLAYWRIGHT=0
@@ -195,7 +195,7 @@ sbx create ... -e SBX_DEV_TOOLS_PLAYWRIGHT=0
 An install kit rather than a prebaked image because kits cannot set one:
 `container`, `image` and `dockerfile` are all rejected by `spec.specFileV2`, and
 `sbx create --template` is CLI-only, so a custom image could not ride along with
-`--kit`. At 31s, maintaining an image and tracking the upstream base is not
+`--kit`. At 30s, maintaining an image and tracking the upstream base is not
 worth it.
 
 ## Failure behaviour

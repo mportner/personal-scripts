@@ -27,8 +27,9 @@
 # against the publisher's own checksum manifest, or an apt package signed by
 # the distro. Nothing floats, and nothing runs through npm or npx.
 #
-# Roughly 45s at sandbox creation, most of it the Playwright system libraries.
-# Set SBX_DEV_TOOLS_PLAYWRIGHT=0 (see below) to skip those.
+# Roughly 30s at sandbox creation, most of it the Playwright system libraries;
+# about 15s with SBX_DEV_TOOLS_PLAYWRIGHT=0 (see below) to skip those. Measured
+# range across runs is 30 to 40s, the variance coming from the apt mirror.
 schemaVersion: "2"
 kind: mixin
 name: dev-tools

@@ -38,6 +38,13 @@ if (( ! ${+SBX_DEFAULT_KITS} )); then
   )
 fi
 
+# Array expansions are explicitly subscripted and quoted throughout. This file
+# is sourced into an interactive shell, so it inherits whatever options the user
+# has set: under `setopt shwordsplit` a bare $SBX_DEFAULT_KITS splits a kit path
+# containing a space and the kit is silently dropped, and under `setopt
+# globsubst` a path containing glob metacharacters triggers filename generation
+# and NOMATCH kills the whole function. Neither happens with stock options, but
+# neither costs anything to prevent.
 sbx() {
   local arg kit
   local -i inject=0
@@ -61,7 +68,7 @@ sbx() {
   esac
 
   if (( inject == 1 )); then
-    for kit in $SBX_DEFAULT_KITS; do
+    for kit in "${SBX_DEFAULT_KITS[@]}"; do
       # Say so rather than quietly dropping a kit. Silently running without one
       # looks identical to running with it until you notice the status line is
       # missing, or that the agent is back to hand-rolling a pnpm shim.
@@ -74,7 +81,7 @@ sbx() {
   fi
 
   if (( $#kit_args )); then
-    command sbx "$1" $kit_args "${@:2}"
+    command sbx "$1" "${kit_args[@]}" "${@:2}"
   else
     command sbx "$@"
   fi
