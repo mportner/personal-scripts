@@ -129,6 +129,21 @@ done
 command -v sbx >/dev/null 2>&1 || die "sbx is not installed"
 command -v git >/dev/null 2>&1 || die "git is not installed"
 
+# Defined here, above --destroy, because that is the first caller. It used to
+# live beside rollback() further down, which --destroy never reaches: it exits
+# before that point, so the call resolved to nothing. `if` exempts its own
+# condition from set -e, so the 127 became a plain false and the destroy path
+# reported "no scoped secret left behind" without ever having looked. Keep this
+# above both callers.
+#
+# Exact string compare rather than a regex: sandbox names may contain periods
+# and plus signs, which are ERE metacharacters. "a+b" as a pattern means "one
+# or more a, then b" and would not match the literal scope "a+b", so the
+# post-delete check would report a credential gone while it was still stored.
+secret_present() {
+  sbx secret ls 2>/dev/null | awk -v n="$NAME" 'NR > 1 && $1 == n { found = 1 } END { exit !found }'
+}
+
 # --- destroy ----------------------------------------------------------------
 
 if (( DESTROY )); then
@@ -340,14 +355,6 @@ fi
 # that does not exist, and it would silently apply to any later sandbox that
 # reused the name. That is the exact hazard --destroy exists to prevent, so it
 # must not be reachable by simply having creation fail.
-# Exact string compare rather than a regex: sandbox names may contain periods
-# and plus signs, which are ERE metacharacters. "a+b" as a pattern means "one
-# or more a, then b" and would not match the literal scope "a+b", so the
-# post-delete check would report a credential gone while it was still stored.
-secret_present() {
-  sbx secret ls 2>/dev/null | awk -v n="$NAME" 'NR > 1 && $1 == n { found = 1 } END { exit !found }'
-}
-
 rollback() {
   printf '\n'
   step "Creation failed, rolling back"
