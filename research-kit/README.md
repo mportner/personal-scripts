@@ -108,6 +108,15 @@ real work: adding yourself as a bypass actor would hand the agent that power
 too, since it acts as you. The launcher warns when a target repo has no active
 ruleset requiring a PR on its default branch.
 
+**Rulesets on a private repository need GitHub Team or Pro.** On a free plan
+the API answers `Upgrade to GitHub Pro or make this repository public` with
+HTTP 403, so the protection cannot be added at all and a token with
+`Contents: write` can push straight to the default branch. The launcher reports
+this separately from a missing repo, because the fix is different and the
+consequence is worse. For a private repo on a free plan the options are to
+upgrade, to make the repo public, or to accept that the sandbox has direct push
+and treat it accordingly.
+
 ### Which permissions the token needs
 
 Derived from what the agent actually runs, counted across real sessions:
@@ -158,6 +167,51 @@ referenced by its own `--token-ref`. This costs nothing in practice, since
 A GitHub App installed on both accounts is the only single credential spanning
 owners, but its installation tokens expire hourly, which turns staging the
 secret into a minting step rather than a one-off.
+
+The launcher picks between them from the repo argument, so the caller does not
+have to remember which default is currently exported:
+
+```bash
+export RESEARCH_GH_TOKEN_REF_MPORTNER=op://Private/gh-agent-personal/credential
+export RESEARCH_GH_TOKEN_REF_B3SOLUTIONS=op://Private/gh-agent-b3solutions/credential
+
+research-sandbox b3solutions/eptools     # picks the b3solutions token
+```
+
+The owner is upper-cased with anything outside `A-Z0-9` folded to `_`.
+`--token-ref` still wins over both variables, and plain
+`RESEARCH_GH_TOKEN_REF` remains the fallback when no owner-specific one is set.
+
+### Why the wrong token used to go unnoticed
+
+Nothing before creation exercises the token. The seed clone runs on the host
+with the host's own credentials, and so does the ruleset check, so pointing the
+launcher at an organisation repo while the personal token is exported produced
+a sandbox that looked healthy and failed at the first push, after the agent had
+done the work.
+
+So the launcher verifies after creating, from inside the sandbox:
+
+```
+==> Verifying token access
+    repo      mportner/league-bot reachable
+    issues    readable
+    checks    readable
+    actions   readable
+```
+
+An unreachable repo aborts with the reference that was used and how it was
+chosen, since nothing will work. Missing read permissions warn and continue,
+because the sandbox is still usable without them.
+
+The checks run inside the sandbox rather than on the host on purpose. `sbx`
+resolves the 1Password reference itself and exposes the result to the sandbox
+as `GH_TOKEN`, so the launcher never handles the plaintext. Verifying on the
+host would mean `op read`-ing the token into a host process to gain nothing.
+
+A revoked or expired token fails the first check too, with
+`Bad credentials (HTTP 401)` rather than a permission error. That is the same
+abort path, which is intended: neither is worth starting a session on.
 
 ## Why the secret is staged before creation
 

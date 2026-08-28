@@ -61,7 +61,14 @@ CONFIG_KIT="$REPO_DIR/claude-config-kit"
 DEV_TOOLS_KIT="$REPO_DIR/dev-tools-kit"
 RESEARCH_KIT="$REPO_DIR/research-kit"
 SEED_ROOT="${RESEARCH_SEED_ROOT:-$HOME/.local/state/sbx-research}"
-TOKEN_REF="${RESEARCH_GH_TOKEN_REF:-}"
+# Left empty here on purpose. The environment defaults are resolved once the
+# owner is known, so an owner-specific reference can outrank the generic one.
+TOKEN_REF=""
+TOKEN_REF_SOURCE=""
+TOKEN_REF_EXPLICIT=0
+# Referenced by the no-token-reference diagnostic, which is reachable via an
+# empty --token-ref before the owner-keyed lookup has run.
+owner_key=""
 
 NAME=""
 NO_TOKEN=0
@@ -95,8 +102,18 @@ Options:
   -h, --help            Show this help.
 
 Environment:
-  RESEARCH_GH_TOKEN_REF   Default for --token-ref.
-  RESEARCH_SEED_ROOT      Seed clone directory (default ~/.local/state/sbx-research).
+  RESEARCH_GH_TOKEN_REF_<OWNER>  Token reference for one repository owner, e.g.
+                                 RESEARCH_GH_TOKEN_REF_MPORTNER. Owner
+                                 upper-cased, anything outside A-Z0-9 to _.
+  RESEARCH_GH_TOKEN_REF          Fallback when no owner-specific one is set.
+  RESEARCH_SEED_ROOT             Seed clone directory
+                                 (default ~/.local/state/sbx-research).
+
+A fine-grained token has one resource owner, so repos under a personal account
+and repos under an organisation need separate tokens. Set one variable per
+owner and the right one is chosen from the repo argument. --token-ref beats
+both. After creation the token is checked from inside the sandbox: an
+unreachable repo aborts, missing read permissions warn.
 
 The token needs these permissions on the repos you want researched:
 
@@ -115,9 +132,6 @@ is named rather than left to inference.
 
 Do not grant Administration. Branch protection comes from the repo's ruleset,
 not the token, and a token that can edit the ruleset can remove its own guard.
-
-A fine-grained token has one resource owner, so repos under a personal account
-and repos under an organisation need separate tokens.
 EOF
 }
 
@@ -141,7 +155,7 @@ need_value() { (( $# >= 2 )) || die "$1 needs a value"; }
 while (( $# > 0 )); do
   case "$1" in
     -n|--name)      need_value "$@"; NAME="$2"; shift ;;
-    -r|--token-ref) need_value "$@"; TOKEN_REF="$2"; shift ;;
+    -r|--token-ref) need_value "$@"; TOKEN_REF="$2"; TOKEN_REF_EXPLICIT=1; shift ;;
     --no-token)     NO_TOKEN=1 ;;
     --destroy)      need_value "$@"; DESTROY=1; NAME="$2"; shift ;;
     -f|--force)     FORCE=1 ;;
@@ -261,6 +275,31 @@ owner="${slug%%/*}"
 repo="${slug##*/}"
 [[ -n "$owner" && -n "$repo" ]] || die "cannot parse owner/repo from: $REPO_ARG"
 
+# A fine-grained token has exactly one resource owner, fixed at creation, so a
+# personal account and an organisation need separate tokens. Pick by owner
+# rather than making the caller remember which default is exported: the seed
+# clone below runs on the host with the host's own credentials, and so does the
+# ruleset check, so a mismatched token is not caught until the agent tries to
+# push from inside the sandbox, long after the work is done.
+#
+# Precedence: --token-ref, then RESEARCH_GH_TOKEN_REF_<OWNER>, then
+# RESEARCH_GH_TOKEN_REF. The owner is upper-cased with anything outside A-Z0-9
+# folded to _, so mportner becomes RESEARCH_GH_TOKEN_REF_MPORTNER.
+if (( TOKEN_REF_EXPLICIT )); then
+  TOKEN_REF_SOURCE="--token-ref"
+else
+  owner_key="$(printf '%s' "$owner" | LC_ALL=C tr '[:lower:]' '[:upper:]' \
+    | LC_ALL=C tr -c 'A-Z0-9' '_')"
+  owner_var="RESEARCH_GH_TOKEN_REF_$owner_key"
+  if [[ -n "${!owner_var:-}" ]]; then
+    TOKEN_REF="${!owner_var}"
+    TOKEN_REF_SOURCE="$owner_var"
+  elif [[ -n "${RESEARCH_GH_TOKEN_REF:-}" ]]; then
+    TOKEN_REF="$RESEARCH_GH_TOKEN_REF"
+    TOKEN_REF_SOURCE="RESEARCH_GH_TOKEN_REF"
+  fi
+fi
+
 # Always HTTPS, even when the caller passed an SSH URL. This is load-bearing,
 # not a normalisation nicety: the sandbox inherits origin from this seed clone,
 # and its GitHub auth is the sbx proxy injecting an Authorization header into
@@ -295,10 +334,12 @@ then enable 'Integrate with 1Password CLI' in the 1Password app's Developer
 settings. Or pass --no-token to create a sandbox with no GitHub credential."
       ;;
   esac
-  note "token     $TOKEN_REF (scoped to this sandbox)"
+  note "token     $TOKEN_REF"
+  note "          via $TOKEN_REF_SOURCE, scoped to this sandbox"
 else
   die \
-"no GitHub token reference. Set RESEARCH_GH_TOKEN_REF or pass --token-ref,
+"no GitHub token reference for owner '$owner'. Set RESEARCH_GH_TOKEN_REF_${owner_key:-<OWNER>}
+for this owner, or RESEARCH_GH_TOKEN_REF as a fallback, or pass --token-ref,
   e.g. --token-ref op://Private/gh-research/credential
 Use --no-token to deliberately create a sandbox with no GitHub access.
 Do not point this at your default token: this sandbox reads untrusted web
@@ -317,7 +358,13 @@ if ! command -v gh >/dev/null 2>&1; then
 elif ! command -v jq >/dev/null 2>&1; then
   note "ruleset   skipped, jq not installed on the host"
 else
-  if rules="$(gh api "repos/$owner/$repo/rulesets" 2>/dev/null)"; then
+  # Captured with stderr so a 403 can be told apart from a 404. Rulesets and
+  # branch protection on a private repo need GitHub Team or Pro, so a private
+  # repo on a free plan reports "Upgrade to GitHub Pro". Reporting that as an
+  # access problem would send you looking for the wrong fix, and it is the more
+  # serious case: the protection cannot be added at all, so the token's push
+  # access to the default branch is unbounded.
+  if rules="$(gh api "repos/$owner/$repo/rulesets" 2>&1)"; then
     protected=0
     for id in $(printf '%s' "$rules" | jq -r '.[]?.id' 2>/dev/null); do
       detail="$(gh api "repos/$owner/$repo/rulesets/$id" 2>/dev/null || printf '{}')"
@@ -337,6 +384,12 @@ else
       printf '             default branch. A token that can push at all can push\n' >&2
       printf '             there directly. Add a ruleset with the pull_request rule.\n' >&2
     fi
+  elif printf '%s' "$rules" | grep -q "Upgrade to GitHub"; then
+    printf '    WARNING  %s/%s cannot have a ruleset: rulesets on a private\n' "$owner" "$repo" >&2
+    printf '             repo need GitHub Team or Pro, and this plan does not\n' >&2
+    printf '             include them. Nothing will stop the agent pushing to\n' >&2
+    printf '             the default branch. Either upgrade the plan, or treat\n' >&2
+    printf '             this sandbox as trusted with direct push.\n' >&2
   else
     note "ruleset   could not check (no access to $owner/$repo, or repo not found)"
   fi
@@ -425,6 +478,73 @@ if ! run sbx create claude --clone --name "$NAME" \
 fi
 
 if (( DRY_RUN )); then exit 0; fi
+
+# --- verify the staged token ------------------------------------------------
+# Run from inside the sandbox deliberately. sbx resolves the 1Password
+# reference itself and exposes the result to the sandbox as GH_TOKEN, so this
+# script never handles the plaintext; a host-side check would have to `op read`
+# it first, putting the token in a host process for no gain.
+#
+# These are the exact failures observed in practice. A token minted for the
+# wrong resource owner still clones, because the seed clone above used the
+# host's credentials, and `gh auth status` inside reports a healthy login
+# either way. Without this, the first symptom is a call failing mid-session.
+
+if (( ! NO_TOKEN )); then
+  printf '\n'
+  step "Verifying token access"
+
+  branch="$(git -C "$SEED" symbolic-ref --short HEAD 2>/dev/null || echo main)"
+
+  # Exit status only; --silent discards the body. Called from `if`, so set -e
+  # does not abort on the failures this exists to detect.
+  token_can() { sbx exec "$NAME" -- gh api "$1" --silent >/dev/null 2>&1; }
+
+  if token_can "repos/$owner/$repo"; then
+    note "repo      $owner/$repo reachable"
+  else
+    printf '\n' >&2
+    printf '    ERROR  the staged token cannot reach %s/%s.\n' "$owner" "$repo" >&2
+    printf '           A fine-grained token has a single resource owner, so one\n' >&2
+    printf '           minted for a different account or organisation will not\n' >&2
+    printf '           reach this repo. The seed clone used your host\n' >&2
+    printf '           credentials, which is why it still succeeded.\n\n' >&2
+    printf '           reference  %s\n' "$TOKEN_REF" >&2
+    printf '           via        %s\n\n' "$TOKEN_REF_SOURCE" >&2
+    printf '           Tear down with: research-sandbox --destroy %s\n' "$NAME" >&2
+    exit 1
+  fi
+
+  # Missing read permissions degrade the sandbox without breaking it, so they
+  # warn rather than abort. Reading CI is the one worth taking seriously: the
+  # agent cannot tell a green pipeline from an unreadable one, so it reports
+  # local test runs as though they were CI.
+  degraded=0
+  if token_can "repos/$owner/$repo/issues?per_page=1"; then
+    note "issues    readable"
+  else
+    note "WARNING: no Issues permission. The agent cannot read or file issues."
+    degraded=1
+  fi
+  if token_can "repos/$owner/$repo/commits/$branch/check-runs"; then
+    note "checks    readable"
+  else
+    note "WARNING: no Checks permission. The agent cannot read CI, so any green"
+    note "         it reports is a local test run, not the pipeline."
+    degraded=1
+  fi
+  if token_can "repos/$owner/$repo/actions/runs?per_page=1"; then
+    note "actions   readable"
+  else
+    note "WARNING: no Actions permission. Workflow runs and job logs are not"
+    note "         readable."
+    degraded=1
+  fi
+
+  if (( degraded )); then
+    note "see research-kit/README.md for the full permission set"
+  fi
+fi
 
 printf '\n'
 step "Ready"
