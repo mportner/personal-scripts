@@ -111,11 +111,11 @@ ruleset requiring a PR on its default branch.
 **Rulesets on a private repository need GitHub Team or Pro.** On a free plan
 the API answers `Upgrade to GitHub Pro or make this repository public` with
 HTTP 403, so the protection cannot be added at all and a token with
-`Contents: write` can push straight to the default branch. The launcher reports
-this separately from a missing repo, because the fix is different and the
-consequence is worse. For a private repo on a free plan the options are to
-upgrade, to make the repo public, or to accept that the sandbox has direct push
-and treat it accordingly.
+`Contents: Read and write` can push straight to the default branch. The
+launcher reports this separately from a missing repo, because the fix is
+different and the consequence is worse. For a private repo on a free plan the
+options are to upgrade, to make the repo public, or to accept that the sandbox
+has direct push and treat it accordingly.
 
 ### Which permissions the token needs
 
@@ -188,7 +188,8 @@ keeps working without the Issues permission.
 
 **Withhold Administration**, along with Secrets, Environments and Variables.
 The `bypass: []` ruleset above is the only thing stopping a push to the default
-branch, and `Administration: write` would let the agent edit that ruleset away.
+branch, and `Administration: Read and write` would let the agent edit that
+ruleset away.
 Repository administration belongs on a separate credential used from the host,
 never one injected into a sandbox.
 
