@@ -66,9 +66,6 @@ SEED_ROOT="${RESEARCH_SEED_ROOT:-$HOME/.local/state/sbx-research}"
 TOKEN_REF=""
 TOKEN_REF_SOURCE=""
 TOKEN_REF_EXPLICIT=0
-# Referenced by the no-token-reference diagnostic, which is reachable via an
-# empty --token-ref before the owner-keyed lookup has run.
-owner_key=""
 
 NAME=""
 NO_TOKEN=0
@@ -161,7 +158,17 @@ need_value() { (( $# >= 2 )) || die "$1 needs a value"; }
 while (( $# > 0 )); do
   case "$1" in
     -n|--name)      need_value "$@"; NAME="$2"; shift ;;
-    -r|--token-ref) need_value "$@"; TOKEN_REF="$2"; TOKEN_REF_EXPLICIT=1; shift ;;
+    -r|--token-ref)
+      need_value "$@"
+      # An empty value would suppress the owner-keyed lookup and then fall
+      # through to the no-reference diagnostic, which advises setting an
+      # environment variable that may already be set and is being ignored
+      # precisely because this flag was passed. Reject it here instead.
+      [[ -n "$2" ]] || die \
+"--token-ref needs a non-empty 1Password reference,
+  e.g. --token-ref op://Private/gh-research/credential
+Use --no-token to create a sandbox with no GitHub access."
+      TOKEN_REF="$2"; TOKEN_REF_EXPLICIT=1; shift ;;
     --no-token)     NO_TOKEN=1 ;;
     --destroy)      need_value "$@"; DESTROY=1; NAME="$2"; shift ;;
     -f|--force)     FORCE=1 ;;
@@ -291,11 +298,11 @@ repo="${slug##*/}"
 # Precedence: --token-ref, then RESEARCH_GH_TOKEN_REF_<OWNER>, then
 # RESEARCH_GH_TOKEN_REF. The owner is upper-cased with anything outside A-Z0-9
 # folded to _, so mportner becomes RESEARCH_GH_TOKEN_REF_MPORTNER.
+owner_key="$(printf '%s' "$owner" | LC_ALL=C tr '[:lower:]' '[:upper:]' \
+  | LC_ALL=C tr -c 'A-Z0-9' '_')"
 if (( TOKEN_REF_EXPLICIT )); then
   TOKEN_REF_SOURCE="--token-ref"
 else
-  owner_key="$(printf '%s' "$owner" | LC_ALL=C tr '[:lower:]' '[:upper:]' \
-    | LC_ALL=C tr -c 'A-Z0-9' '_')"
   owner_var="RESEARCH_GH_TOKEN_REF_$owner_key"
   if [[ -n "${!owner_var:-}" ]]; then
     TOKEN_REF="${!owner_var}"
@@ -344,7 +351,7 @@ settings. Or pass --no-token to create a sandbox with no GitHub credential."
   note "          via $TOKEN_REF_SOURCE, scoped to this sandbox"
 else
   die \
-"no GitHub token reference for owner '$owner'. Set RESEARCH_GH_TOKEN_REF_${owner_key:-<OWNER>}
+"no GitHub token reference for owner '$owner'. Set RESEARCH_GH_TOKEN_REF_$owner_key
 for this owner, or RESEARCH_GH_TOKEN_REF as a fallback, or pass --token-ref,
   e.g. --token-ref op://Private/gh-research/credential
 Use --no-token to deliberately create a sandbox with no GitHub access.
