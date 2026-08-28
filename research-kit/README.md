@@ -108,8 +108,52 @@ real work: adding yourself as a bypass actor would hand the agent that power
 too, since it acts as you. The launcher warns when a target repo has no active
 ruleset requiring a PR on its default branch.
 
-Give the research token `Contents: write`, `Pull requests: write` and
-`Metadata: read` on the repos you want researched, and nothing else.
+### Which permissions the token needs
+
+Derived from what the agent actually runs, counted across real sessions:
+`gh pr checks` leads at 106 invocations, then `gh pr view` (79), `gh issue
+view` (56), `resolveReviewThread` (48), `gh issue create` and `gh pr create`
+(25 each).
+
+| Permission | Level | Covers |
+| --- | --- | --- |
+| Metadata | Read | mandatory, auto-selected |
+| Contents | Read and write | clone, push, branches, tags, `gh pr merge` |
+| Pull requests | Read and write | create, edit, merge, comment, `resolveReviewThread`, `requestReviews` |
+| Issues | Read and write | `gh issue *`, labels, sub-issues, issue dependencies |
+| Checks | Read | `gh pr checks`, `statusCheckRollup` |
+| Commit statuses | Read | checks that post as a status rather than a check run |
+| Actions | Read and write | `gh run view/list/watch`, job logs, `gh workflow run` |
+| Workflows | Write | pushing anything under `.github/workflows/` |
+| Code scanning alerts | Read | optional, only for delegated security triage |
+
+An earlier version of this file recommended `Contents`, `Pull requests` and
+`Metadata` alone. That is not enough, and the gap is silent: `gh auth status`
+still reports a healthy login, and the first sign of trouble is a call failing
+mid-task. A real session lost both `gh issue create` and `gh pr checks` to it
+and merged two PRs having only ever seen local test results.
+
+Note that the PR timeline endpoint (`repos/{o}/{r}/issues/{n}/timeline`), which
+review-loop tooling polls, is governed by Pull requests rather than Issues. It
+keeps working without the Issues permission.
+
+**Withhold Administration**, along with Secrets, Environments and Variables.
+The `bypass: []` ruleset above is the only thing stopping a push to the default
+branch, and `Administration: write` would let the agent edit that ruleset away.
+Repository administration belongs on a separate credential used from the host,
+never one injected into a sandbox.
+
+### One token per owner
+
+A fine-grained token has exactly one resource owner, chosen at creation and
+fixed thereafter. Repos under a personal account and repos under an
+organisation therefore need two tokens carrying the same permission set, each
+referenced by its own `--token-ref`. This costs nothing in practice, since
+`sbx secret set --sandbox NAME` is already per-sandbox.
+
+A GitHub App installed on both accounts is the only single credential spanning
+owners, but its installation tokens expire hourly, which turns staging the
+secret into a minting step rather than a one-off.
 
 ## Why the secret is staged before creation
 

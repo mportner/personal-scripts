@@ -98,9 +98,22 @@ Environment:
   RESEARCH_GH_TOKEN_REF   Default for --token-ref.
   RESEARCH_SEED_ROOT      Seed clone directory (default ~/.local/state/sbx-research).
 
-The token needs Contents: write, Pull requests: write and Metadata: read on
-the repos you want researched, and nothing else. Branch protection comes from
-the repo's ruleset, not the token.
+The token needs these permissions on the repos you want researched:
+
+  Metadata          read    (mandatory)
+  Contents          write   clone, push, branches, tags
+  Pull requests     write   create, review, resolve threads, merge
+  Issues            write   file and read follow-ups, labels
+  Checks            read    gh pr checks
+  Commit statuses   read    checks posted as statuses
+  Actions           write   gh run view, job logs, gh workflow run
+  Workflows         write   pushing under .github/workflows
+
+Do not grant Administration. Branch protection comes from the repo's ruleset,
+not the token, and a token that can edit the ruleset can remove its own guard.
+
+A fine-grained token has one resource owner, so repos under a personal account
+and repos under an organisation need separate tokens.
 EOF
 }
 
