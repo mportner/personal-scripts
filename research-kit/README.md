@@ -122,8 +122,11 @@ and treat it accordingly.
 Derived from what the agent actually runs, counted across real sessions:
 `gh pr checks` leads at 106 invocations, then `gh pr view` (79), `gh issue
 view` (56), `resolveReviewThread` (48), `gh issue create` and `gh pr create`
-(25 each). Levels use the labels GitHub's token UI shows, so they can be
-selected verbatim; Read and write always implies read.
+(25 each). Those counts come from host sessions, where a classic token is in
+use; the most-reached-for command turns out to be the one no fine-grained token
+can run, which is why the CI note below matters. Levels use the labels GitHub's
+token UI shows, so they can be selected verbatim; Read and write always implies
+read.
 
 Merging is listed once, under Pull requests. Contents needs write regardless,
 because the agent pushes branches.
@@ -163,16 +166,21 @@ no known alternative. There is one, and it works.
 | Contents | Read and write | read to clone, write to push branches and tags |
 | Pull requests | Read and write | create, edit, merge, comment, `resolveReviewThread`, `requestReviews` |
 | Issues | Read and write | `gh issue *`, labels, sub-issues, issue dependencies |
-| Commit statuses | Read-only | `gh pr checks`, `statusCheckRollup` |
-| Actions | Read-only | `gh run view/list/watch`, job logs. Raise to write only if you delegate `gh workflow run` |
+| Commit statuses | Read-only | `commits/{sha}/status` and `/statuses`, so checks posted as a commit status are visible |
+| Actions | Read-only | `gh run view/list/watch`, job logs, and reading CI (see below). Raise to write only if you delegate `gh workflow run` |
 | Workflows | Read and write | pushing anything under `.github/workflows/` |
 | Code scanning alerts | Read-only | optional, only for delegated security triage |
 
 An earlier version of this file recommended `Contents`, `Pull requests` and
 `Metadata` alone. That is not enough, and the gap is silent: `gh auth status`
 still reports a healthy login, and the first sign of trouble is a call failing
-mid-task. A real session lost both `gh issue create` and `gh pr checks` to it
-and merged two PRs having only ever seen local test results.
+mid-task. A real session lost `gh issue create` to it and could not file
+follow-ups it had already drafted.
+
+That session also merged two PRs having only ever seen local test results, but
+that half was not a permission gap: `gh pr checks` cannot work from any
+fine-grained token, and the Actions API alternative below was not known at the
+time.
 
 Note that the PR timeline endpoint (`repos/{o}/{r}/issues/{n}/timeline`), which
 review-loop tooling polls, is governed by Pull requests rather than Issues. It

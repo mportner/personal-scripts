@@ -122,8 +122,8 @@ is named rather than left to inference.
   Contents          Read and write   read to clone, write to push
   Pull requests     Read and write   write to create, review and merge
   Issues            Read and write   write to file follow-ups and set labels
-  Commit statuses   Read-only        gh pr checks, via statusCheckRollup
-  Actions           Read-only        gh run view and job logs
+  Commit statuses   Read-only        checks posted as a commit status
+  Actions           Read-only        gh run view, job logs, and reading CI
   Workflows         Read and write   write to push under .github/workflows
 
 There is no Checks permission for fine-grained tokens, only for GitHub Apps,
