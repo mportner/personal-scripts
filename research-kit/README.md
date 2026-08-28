@@ -113,19 +113,23 @@ ruleset requiring a PR on its default branch.
 Derived from what the agent actually runs, counted across real sessions:
 `gh pr checks` leads at 106 invocations, then `gh pr view` (79), `gh issue
 view` (56), `resolveReviewThread` (48), `gh issue create` and `gh pr create`
-(25 each).
+(25 each). Levels use the labels GitHub's token UI shows, so they can be
+selected verbatim; Read and write always implies read.
+
+Merging is listed once, under Pull requests. Contents needs write regardless,
+because the agent pushes branches.
 
 | Permission | Level | Covers |
 | --- | --- | --- |
-| Metadata | Read | mandatory, auto-selected |
-| Contents | Read and write | clone, push, branches, tags, `gh pr merge` |
+| Metadata | Read-only | mandatory, selected for you |
+| Contents | Read and write | read to clone, write to push branches and tags |
 | Pull requests | Read and write | create, edit, merge, comment, `resolveReviewThread`, `requestReviews` |
 | Issues | Read and write | `gh issue *`, labels, sub-issues, issue dependencies |
-| Checks | Read | `gh pr checks`, `statusCheckRollup` |
-| Commit statuses | Read | checks that post as a status rather than a check run |
-| Actions | Read and write | `gh run view/list/watch`, job logs, `gh workflow run` |
-| Workflows | Write | pushing anything under `.github/workflows/` |
-| Code scanning alerts | Read | optional, only for delegated security triage |
+| Checks | Read-only | `gh pr checks`, `statusCheckRollup` |
+| Commit statuses | Read-only | checks that post as a status rather than a check run |
+| Actions | Read-only | `gh run view/list/watch`, job logs. Raise to write only if you delegate `gh workflow run` |
+| Workflows | Read and write | pushing anything under `.github/workflows/` |
+| Code scanning alerts | Read-only | optional, only for delegated security triage |
 
 An earlier version of this file recommended `Contents`, `Pull requests` and
 `Metadata` alone. That is not enough, and the gap is silent: `gh auth status`

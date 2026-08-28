@@ -100,14 +100,18 @@ Environment:
 
 The token needs these permissions on the repos you want researched:
 
-  Metadata          read    (mandatory)
-  Contents          write   clone, push, branches, tags
-  Pull requests     write   create, review, resolve threads, merge
-  Issues            write   file and read follow-ups, labels
-  Checks            read    gh pr checks
-  Commit statuses   read    checks posted as statuses
-  Actions           write   gh run view, job logs, gh workflow run
-  Workflows         write   pushing under .github/workflows
+Levels are the labels GitHub's own token UI uses, so they can be selected
+verbatim. Read and write always implies read; the reason each one needs write
+is named rather than left to inference.
+
+  Metadata          Read-only        mandatory, selected for you
+  Contents          Read and write   read to clone, write to push
+  Pull requests     Read and write   write to create, review and merge
+  Issues            Read and write   write to file follow-ups and set labels
+  Checks            Read-only        gh pr checks
+  Commit statuses   Read-only        checks posted as a status
+  Actions           Read-only        gh run view and job logs
+  Workflows         Read and write   write to push under .github/workflows
 
 Do not grant Administration. Branch protection comes from the repo's ruleset,
 not the token, and a token that can edit the ruleset can remove its own guard.
