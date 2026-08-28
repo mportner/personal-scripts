@@ -129,8 +129,12 @@ is named rather than left to inference.
   Actions           Read-only        gh run view and job logs
   Workflows         Read and write   write to push under .github/workflows
 
-There is no Checks permission for fine-grained tokens, only for GitHub Apps.
-CI reading comes from Commit statuses, plus Actions for the workflow-run half.
+There is no Checks permission for fine-grained tokens, only for GitHub Apps,
+so `gh pr checks` cannot work from one: it resolves statusCheckRollup, which
+reaches the Checks API and answers 403. Read CI through the Actions API:
+
+  gh api repos/OWNER/REPO/actions/runs?head_sha=SHA \
+    --jq '.workflow_runs[] | "\(.name): \(.status)/\(.conclusion)"'
 
 Do not grant Administration. Branch protection comes from the repo's ruleset,
 not the token, and a token that can edit the ruleset can remove its own guard.
@@ -498,11 +502,11 @@ if (( ! NO_TOKEN )); then
   printf '\n'
   step "Verifying token access"
 
-  # A commit SHA, not the branch name. The check-runs endpoint takes {ref} as a
-  # single path segment, so a default branch containing a slash (release/stable)
-  # would split across segments and come back "No commit found for SHA:
-  # release/stable". That 404 is indistinguishable here from an unreadable
-  # check run, so it would warn about the exact thing it is meant to verify.
+  # A commit SHA, not the branch name. These endpoints take {ref} as a single
+  # path segment, so a default branch containing a slash (release/stable) would
+  # split across segments and come back "No commit found for SHA:
+  # release/stable". That 404 is indistinguishable here from a permission
+  # failure, so it would warn about the exact thing it is meant to verify.
   head_sha="$(git -C "$SEED" rev-parse HEAD 2>/dev/null || printf 'HEAD')"
 
   # Exit status only; --silent discards the body. Called from `if`, so set -e
@@ -535,19 +539,25 @@ if (( ! NO_TOKEN )); then
     note "WARNING: no Issues permission. The agent cannot read or file issues."
     degraded=1
   fi
-  if token_can "repos/$owner/$repo/commits/$head_sha/check-runs"; then
-    note "checks    readable"
+  # Deliberately not probing check-runs. That endpoint answers
+  # X-Accepted-GitHub-Permissions: checks=read, and `checks` is a GitHub App
+  # permission with no fine-grained token equivalent, so it can never pass here
+  # and a probe for it would report a permanent, unfixable failure. CI is read
+  # through the Actions API instead; see the note below the permission list in
+  # --help.
+  if token_can "repos/$owner/$repo/commits/$head_sha/status"; then
+    note "statuses  readable"
   else
-    note "WARNING: cannot read check runs, so the agent cannot see CI and any"
-    note "         green it reports is a local test run, not the pipeline."
-    note "         Add Commit statuses read; there is no Checks permission."
+    note "WARNING: no Commit statuses permission. Checks reported as a commit"
+    note "         status are invisible to the agent."
     degraded=1
   fi
   if token_can "repos/$owner/$repo/actions/runs?per_page=1"; then
-    note "actions   readable"
+    note "actions   readable, so CI is visible via the Actions API"
   else
     note "WARNING: no Actions permission. Workflow runs and job logs are not"
-    note "         readable."
+    note "         readable, so the agent cannot see CI at all and any green it"
+    note "         reports is a local test run, not the pipeline."
     degraded=1
   fi
 

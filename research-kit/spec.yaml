@@ -72,3 +72,23 @@ agentInstructions:
     requires a pull request, so pushing to it directly will be refused. That is
     expected, not a misconfiguration to work around. Use a feature branch and
     open a PR.
+
+    ## `gh pr checks` does not work here, but CI is still readable
+
+    The token is a fine-grained one, and reading check runs needs the `checks`
+    permission, which exists only for GitHub Apps. So `gh pr checks` fails with
+    `Resource not accessible by personal access token` no matter how the token
+    is configured. This is a ceiling, not a misconfiguration, and not something
+    to ask the user to fix.
+
+    Read CI through the Actions API instead:
+
+    ```bash
+    gh api "repos/OWNER/REPO/actions/runs?head_sha=$SHA" \
+      --jq '.workflow_runs[] | "\(.name): \(.status)/\(.conclusion)"'
+    ```
+
+    Poll that until every run reports a `conclusion`. Do not fall back to
+    reporting local test results as though they were CI, and do not describe a
+    branch as green on the strength of a local run. If you genuinely cannot
+    read CI, say so plainly in those words.

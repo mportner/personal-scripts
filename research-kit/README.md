@@ -128,14 +128,34 @@ selected verbatim; Read and write always implies read.
 Merging is listed once, under Pull requests. Contents needs write regardless,
 because the agent pushes branches.
 
-**There is no `Checks` permission.** It exists for GitHub Apps but not for
-fine-grained tokens, and looking for it in the token UI is a dead end. CI
-reading is listed here under Commit statuses, which is what the failing call
-actually needed: `gh pr checks` resolves `statusCheckRollup`, which aggregates
-commit statuses and check runs, and the token that failed had no Commit
-statuses permission. GitHub does not publish a fine-grained mapping for the
-`check-runs` endpoints themselves; they appear nowhere in the permissions
-reference. Add Actions read alongside, which covers the workflow-run half.
+**`gh pr checks` cannot work from a fine-grained token, at any permission
+level.** It resolves `statusCheckRollup`, which reaches the Checks API, and
+that API answers:
+
+```
+HTTP/1.1 403 Forbidden
+X-Accepted-Github-Permissions: checks=read
+```
+
+`checks` is a GitHub App permission with no fine-grained token equivalent. It
+is absent from the token UI and from GitHub's permissions reference, which
+carries sections for Commit statuses and Actions but none for Checks. So this
+is a hard ceiling, not a permission that was missed.
+
+Confirmed against a real token holding Commit statuses read: `/status` and
+`/statuses` return data while `/check-runs` and `/check-suites` return 403.
+
+**Read CI through the Actions API instead.** `Actions: Read-only` covers it:
+
+```bash
+gh api "repos/OWNER/REPO/actions/runs?head_sha=$SHA" \
+  --jq '.workflow_runs[] | "\(.name): \(.status)/\(.conclusion)"'
+# Deploy: completed/success
+```
+
+This matters more than a CLI inconvenience. The original session reported two
+PRs green on local test runs alone, because `gh pr checks` failed and there was
+no known alternative. There is one, and it works.
 
 | Permission | Level | Covers |
 | --- | --- | --- |
