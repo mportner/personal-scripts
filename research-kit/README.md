@@ -128,14 +128,22 @@ selected verbatim; Read and write always implies read.
 Merging is listed once, under Pull requests. Contents needs write regardless,
 because the agent pushes branches.
 
+**There is no `Checks` permission.** It exists for GitHub Apps but not for
+fine-grained tokens, and looking for it in the token UI is a dead end. CI
+reading is listed here under Commit statuses, which is what the failing call
+actually needed: `gh pr checks` resolves `statusCheckRollup`, which aggregates
+commit statuses and check runs, and the token that failed had no Commit
+statuses permission. GitHub does not publish a fine-grained mapping for the
+`check-runs` endpoints themselves; they appear nowhere in the permissions
+reference. Add Actions read alongside, which covers the workflow-run half.
+
 | Permission | Level | Covers |
 | --- | --- | --- |
 | Metadata | Read-only | mandatory, selected for you |
 | Contents | Read and write | read to clone, write to push branches and tags |
 | Pull requests | Read and write | create, edit, merge, comment, `resolveReviewThread`, `requestReviews` |
 | Issues | Read and write | `gh issue *`, labels, sub-issues, issue dependencies |
-| Checks | Read-only | `gh pr checks`, `statusCheckRollup` |
-| Commit statuses | Read-only | checks that post as a status rather than a check run |
+| Commit statuses | Read-only | `gh pr checks`, `statusCheckRollup` |
 | Actions | Read-only | `gh run view/list/watch`, job logs. Raise to write only if you delegate `gh workflow run` |
 | Workflows | Read and write | pushing anything under `.github/workflows/` |
 | Code scanning alerts | Read-only | optional, only for delegated security triage |

@@ -125,10 +125,12 @@ is named rather than left to inference.
   Contents          Read and write   read to clone, write to push
   Pull requests     Read and write   write to create, review and merge
   Issues            Read and write   write to file follow-ups and set labels
-  Checks            Read-only        gh pr checks
-  Commit statuses   Read-only        checks posted as a status
+  Commit statuses   Read-only        gh pr checks, via statusCheckRollup
   Actions           Read-only        gh run view and job logs
   Workflows         Read and write   write to push under .github/workflows
+
+There is no Checks permission for fine-grained tokens, only for GitHub Apps.
+CI reading comes from Commit statuses, plus Actions for the workflow-run half.
 
 Do not grant Administration. Branch protection comes from the repo's ruleset,
 not the token, and a token that can edit the ruleset can remove its own guard.
@@ -499,8 +501,8 @@ if (( ! NO_TOKEN )); then
   # A commit SHA, not the branch name. The check-runs endpoint takes {ref} as a
   # single path segment, so a default branch containing a slash (release/stable)
   # would split across segments and come back "No commit found for SHA:
-  # release/stable". That 404 is indistinguishable here from a missing Checks
-  # permission, so it would warn about the exact thing it is meant to verify.
+  # release/stable". That 404 is indistinguishable here from an unreadable
+  # check run, so it would warn about the exact thing it is meant to verify.
   head_sha="$(git -C "$SEED" rev-parse HEAD 2>/dev/null || printf 'HEAD')"
 
   # Exit status only; --silent discards the body. Called from `if`, so set -e
@@ -536,8 +538,9 @@ if (( ! NO_TOKEN )); then
   if token_can "repos/$owner/$repo/commits/$head_sha/check-runs"; then
     note "checks    readable"
   else
-    note "WARNING: no Checks permission. The agent cannot read CI, so any green"
-    note "         it reports is a local test run, not the pipeline."
+    note "WARNING: cannot read check runs, so the agent cannot see CI and any"
+    note "         green it reports is a local test run, not the pipeline."
+    note "         Add Commit statuses read; there is no Checks permission."
     degraded=1
   fi
   if token_can "repos/$owner/$repo/actions/runs?per_page=1"; then
