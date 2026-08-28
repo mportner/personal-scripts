@@ -204,14 +204,41 @@ An unreachable repo aborts with the reference that was used and how it was
 chosen, since nothing will work. Missing read permissions warn and continue,
 because the sandbox is still usable without them.
 
-The checks run inside the sandbox rather than on the host on purpose. `sbx`
-resolves the 1Password reference itself and exposes the result to the sandbox
-as `GH_TOKEN`, so the launcher never handles the plaintext. Verifying on the
-host would mean `op read`-ing the token into a host process to gain nothing.
+The checks run inside the sandbox rather than on the host on purpose, and
+running them there does not expose the credential. See below.
 
 A revoked or expired token fails the first check too, with
 `Bad credentials (HTTP 401)` rather than a permission error. That is the same
 abort path, which is intended: neither is worth starting a session on.
+
+### The sandbox never holds the token
+
+`GH_TOKEN` inside a sandbox is a placeholder, not the credential. It is a
+40-character `gho_sbxprox...` sentinel, byte for byte identical across
+sandboxes, and `HTTPS_PROXY` points every request at the sbx egress proxy,
+which substitutes the real secret on the host side.
+
+Verified by comparing the value's hash in two different sandboxes (identical)
+and then calling the API from each:
+
+```
+claude-personal-scripts   gh api user  ->  mportner
+research-league-bot       gh api user  ->  Bad credentials (HTTP 401)
+```
+
+Same placeholder, different results, because the difference lives entirely in
+what the proxy holds for each sandbox.
+
+This is worth stating because `gh auth status` reports `using token
+(GH_TOKEN)`, which reads as though the token were sitting in the environment.
+It is not, and the distinction matters here more than anywhere else: this is
+the one sandbox with unrestricted egress reading untrusted web content. An
+agent that could read its own credential could leak it. It cannot, so the
+blast radius of a prompt injection is bounded by what the token may do, not by
+the token escaping.
+
+It also means the permission set is the entire boundary, which is why the table
+above withholds Administration rather than trusting the agent not to use it.
 
 ## Why the secret is staged before creation
 

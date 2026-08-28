@@ -480,10 +480,12 @@ fi
 if (( DRY_RUN )); then exit 0; fi
 
 # --- verify the staged token ------------------------------------------------
-# Run from inside the sandbox deliberately. sbx resolves the 1Password
-# reference itself and exposes the result to the sandbox as GH_TOKEN, so this
-# script never handles the plaintext; a host-side check would have to `op read`
-# it first, putting the token in a host process for no gain.
+# Run from inside the sandbox deliberately, and note that this does not expose
+# the credential. GH_TOKEN there is a fixed placeholder (gho_sbxprox..., byte
+# for byte identical across sandboxes); the real secret stays on the host and
+# the egress proxy substitutes it. So these calls exercise the token without
+# anything in the sandbox, or in this script, ever holding it. A host-side
+# check would have to `op read` the plaintext into a host process for no gain.
 #
 # These are the exact failures observed in practice. A token minted for the
 # wrong resource owner still clones, because the seed clone above used the
