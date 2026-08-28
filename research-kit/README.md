@@ -232,18 +232,23 @@ So the launcher verifies after creating, from inside the sandbox:
 ==> Verifying token access
     repo      mportner/league-bot reachable
     issues    readable
-    checks    readable
-    actions   readable
+    statuses  readable
+    actions   readable, so CI is visible via the Actions API
 ```
+
+Note what is absent: there is no check-runs probe. That endpoint needs
+`checks=read`, which no fine-grained token can hold, so probing it could only
+ever report a permanent failure. Reading CI is verified through Actions
+instead, per the section above.
 
 An unreachable repo aborts with the reference that was used and how it was
 chosen, since nothing will work. Missing read permissions warn and continue,
 because the sandbox is still usable without them.
 
-The checks run inside the sandbox rather than on the host on purpose, and
+The probes run inside the sandbox rather than on the host on purpose, and
 running them there does not expose the credential. See below.
 
-A revoked or expired token fails the first check too, with
+A revoked or expired token fails the first probe too, with
 `Bad credentials (HTTP 401)` rather than a permission error. That is the same
 abort path, which is intended: neither is worth starting a session on.
 
