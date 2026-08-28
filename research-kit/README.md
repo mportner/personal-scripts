@@ -108,8 +108,179 @@ real work: adding yourself as a bypass actor would hand the agent that power
 too, since it acts as you. The launcher warns when a target repo has no active
 ruleset requiring a PR on its default branch.
 
-Give the research token `Contents: write`, `Pull requests: write` and
-`Metadata: read` on the repos you want researched, and nothing else.
+**Rulesets on a private repository need GitHub Team or Pro.** On a free plan
+the API answers `Upgrade to GitHub Pro or make this repository public` with
+HTTP 403, so the protection cannot be added at all and a token with
+`Contents: Read and write` can push straight to the default branch. The
+launcher reports this separately from a missing repo, because the fix is
+different and the consequence is worse. For a private repo on a free plan the
+options are to upgrade, to make the repo public, or to accept that the sandbox
+has direct push and treat it accordingly.
+
+### Which permissions the token needs
+
+Derived from what the agent actually runs, counted across real sessions:
+`gh pr checks` leads at 106 invocations, then `gh pr view` (79), `gh issue
+view` (56), `resolveReviewThread` (48), `gh issue create` and `gh pr create`
+(25 each). Those counts come from host sessions, where a classic token is in
+use; the most-reached-for command turns out to be the one no fine-grained token
+can run, which is why the CI note below matters. Levels use the labels GitHub's
+token UI shows, so they can be selected verbatim; Read and write always implies
+read.
+
+Merging is listed once, under Pull requests. Contents needs write regardless,
+because the agent pushes branches.
+
+**`gh pr checks` cannot work from a fine-grained token, at any permission
+level.** It resolves `statusCheckRollup`, which reaches the Checks API, and
+that API answers:
+
+```
+HTTP/1.1 403 Forbidden
+X-Accepted-Github-Permissions: checks=read
+```
+
+`checks` is a GitHub App permission with no fine-grained token equivalent. It
+is absent from the token UI and from GitHub's permissions reference, which
+carries sections for Commit statuses and Actions but none for Checks. So this
+is a hard ceiling, not a permission that was missed.
+
+Confirmed against a real token holding Commit statuses read: `/status` and
+`/statuses` return data while `/check-runs` and `/check-suites` return 403.
+
+**Read CI through the Actions API instead.** `Actions: Read-only` covers it:
+
+```bash
+gh api "repos/OWNER/REPO/actions/runs?head_sha=$SHA" \
+  --jq '.workflow_runs[] | "\(.name): \(.status)/\(.conclusion)"'
+# Deploy: completed/success
+```
+
+This matters more than a CLI inconvenience. The original session reported two
+PRs green on local test runs alone, because `gh pr checks` failed and there was
+no known alternative. There is one, and it works.
+
+| Permission | Level | Covers |
+| --- | --- | --- |
+| Metadata | Read-only | mandatory, selected for you |
+| Contents | Read and write | read to clone, write to push branches and tags |
+| Pull requests | Read and write | create, edit, merge, comment, `resolveReviewThread`, `requestReviews` |
+| Issues | Read and write | `gh issue *`, labels, sub-issues, issue dependencies |
+| Commit statuses | Read-only | `commits/{sha}/status` and `/statuses`, so checks posted as a commit status are visible |
+| Actions | Read-only | `gh run view/list/watch`, job logs, and reading CI (see below). Raise to write only if you delegate `gh workflow run` |
+| Workflows | Read and write | pushing anything under `.github/workflows/` |
+| Code scanning alerts | Read-only | optional, only for delegated security triage |
+
+An earlier version of this file recommended `Contents`, `Pull requests` and
+`Metadata` alone. That is not enough, and the gap is silent: `gh auth status`
+still reports a healthy login, and the first sign of trouble is a call failing
+mid-task. A real session lost `gh issue create` to it and could not file
+follow-ups it had already drafted.
+
+That session also merged two PRs having only ever seen local test results, but
+that half was not a permission gap: `gh pr checks` cannot work from any
+fine-grained token, and the Actions API alternative below was not known at the
+time.
+
+Note that the PR timeline endpoint (`repos/{o}/{r}/issues/{n}/timeline`), which
+review-loop tooling polls, is governed by Pull requests rather than Issues. It
+keeps working without the Issues permission.
+
+**Withhold Administration**, along with Secrets, Environments and Variables.
+The `bypass: []` ruleset above is the only thing stopping a push to the default
+branch, and `Administration: Read and write` would let the agent edit that
+ruleset away.
+Repository administration belongs on a separate credential used from the host,
+never one injected into a sandbox.
+
+### One token per owner
+
+A fine-grained token has exactly one resource owner, chosen at creation and
+fixed thereafter. Repos under a personal account and repos under an
+organisation therefore need two tokens carrying the same permission set, each
+referenced by its own `--token-ref`. This costs nothing in practice, since
+`sbx secret set --sandbox NAME` is already per-sandbox.
+
+A GitHub App installed on both accounts is the only single credential spanning
+owners, but its installation tokens expire hourly, which turns staging the
+secret into a minting step rather than a one-off.
+
+The launcher picks between them from the repo argument, so the caller does not
+have to remember which default is currently exported:
+
+```bash
+export RESEARCH_GH_TOKEN_REF_MPORTNER=op://Private/gh-agent-personal/credential
+export RESEARCH_GH_TOKEN_REF_B3SOLUTIONS=op://Private/gh-agent-b3solutions/credential
+
+research-sandbox b3solutions/eptools     # picks the b3solutions token
+```
+
+The owner is upper-cased with anything outside `A-Z0-9` folded to `_`.
+`--token-ref` still wins over both variables, and plain
+`RESEARCH_GH_TOKEN_REF` remains the fallback when no owner-specific one is set.
+
+### Why the wrong token used to go unnoticed
+
+Nothing before creation exercises the token. The seed clone runs on the host
+with the host's own credentials, and so does the ruleset check, so pointing the
+launcher at an organisation repo while the personal token is exported produced
+a sandbox that looked healthy and failed at the first push, after the agent had
+done the work.
+
+So the launcher verifies after creating, from inside the sandbox:
+
+```
+==> Verifying token access
+    repo      mportner/league-bot reachable
+    issues    readable
+    statuses  readable
+    actions   readable, so CI is visible via the Actions API
+```
+
+Note what is absent: there is no check-runs probe. That endpoint needs
+`checks=read`, which no fine-grained token can hold, so probing it could only
+ever report a permanent failure. Reading CI is verified through Actions
+instead, per the section above.
+
+An unreachable repo aborts with the reference that was used and how it was
+chosen, since nothing will work. Missing read permissions warn and continue,
+because the sandbox is still usable without them.
+
+The probes run inside the sandbox rather than on the host on purpose, and
+running them there does not expose the credential. See below.
+
+A revoked or expired token fails the first probe too, with
+`Bad credentials (HTTP 401)` rather than a permission error. That is the same
+abort path, which is intended: neither is worth starting a session on.
+
+### The sandbox never holds the token
+
+`GH_TOKEN` inside a sandbox is a placeholder, not the credential. It is a
+40-character `gho_sbxprox...` sentinel, byte for byte identical across
+sandboxes, and `HTTPS_PROXY` points every request at the sbx egress proxy,
+which substitutes the real secret on the host side.
+
+Verified by comparing the value's hash in two different sandboxes (identical)
+and then calling the API from each:
+
+```
+claude-personal-scripts   gh api user  ->  mportner
+research-league-bot       gh api user  ->  Bad credentials (HTTP 401)
+```
+
+Same placeholder, different results, because the difference lives entirely in
+what the proxy holds for each sandbox.
+
+This is worth stating because `gh auth status` reports `using token
+(GH_TOKEN)`, which reads as though the token were sitting in the environment.
+It is not, and the distinction matters here more than anywhere else: this is
+the one sandbox with unrestricted egress reading untrusted web content. An
+agent that could read its own credential could leak it. It cannot, so the
+blast radius of a prompt injection is bounded by what the token may do, not by
+the token escaping.
+
+It also means the permission set is the entire boundary, which is why the table
+above withholds Administration rather than trusting the agent not to use it.
 
 ## Why the secret is staged before creation
 
