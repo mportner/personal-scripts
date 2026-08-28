@@ -496,7 +496,12 @@ if (( ! NO_TOKEN )); then
   printf '\n'
   step "Verifying token access"
 
-  branch="$(git -C "$SEED" symbolic-ref --short HEAD 2>/dev/null || echo main)"
+  # A commit SHA, not the branch name. The check-runs endpoint takes {ref} as a
+  # single path segment, so a default branch containing a slash (release/stable)
+  # would split across segments and come back "No commit found for SHA:
+  # release/stable". That 404 is indistinguishable here from a missing Checks
+  # permission, so it would warn about the exact thing it is meant to verify.
+  head_sha="$(git -C "$SEED" rev-parse HEAD 2>/dev/null || printf 'HEAD')"
 
   # Exit status only; --silent discards the body. Called from `if`, so set -e
   # does not abort on the failures this exists to detect.
@@ -528,7 +533,7 @@ if (( ! NO_TOKEN )); then
     note "WARNING: no Issues permission. The agent cannot read or file issues."
     degraded=1
   fi
-  if token_can "repos/$owner/$repo/commits/$branch/check-runs"; then
+  if token_can "repos/$owner/$repo/commits/$head_sha/check-runs"; then
     note "checks    readable"
   else
     note "WARNING: no Checks permission. The agent cannot read CI, so any green"
