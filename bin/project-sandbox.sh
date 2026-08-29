@@ -139,6 +139,11 @@ Environment:
   SBX_GH_TOKEN_REF          Fallback when no owner-specific one is set.
   SBX_DEV_STATE_ROOT        Preflight state directory
                             (default ~/.local/state/sbx-dev).
+  SBX_CLAUDE_SUBSCRIPTION_TYPE
+                            Plan name the sandbox banner should report (max,
+                            pro, ...). Defaults to the plan on the host's own
+                            account. sbx stages no plan of its own, so without
+                            it the banner reads "Claude API".
 
 The owner comes from the checkout's origin remote, so there is nothing to pass.
 A non-GitHub origin fails preflight, and a checkout with no origin needs
@@ -532,6 +537,12 @@ The global token is not a fallback here: keeping it out of development
 sandboxes is the whole reason this command exists."
 fi
 
+# Only the banner depends on this, so an unresolved plan is a note rather than a
+# failure. It also sets PLAN_ENV for the create below. See
+# resolve_subscription_type in lib/sandbox-launcher.sh for why the host keychain
+# is not consulted.
+report_subscription_type
+
 # A global secret is inherited by any sandbox that has none of its own, which
 # makes the narrow token above a courtesy rather than a boundary. Reported
 # rather than deleted, because it is shared state and other sandboxes may still
@@ -642,6 +653,7 @@ if [[ "$MODE" == create ]]; then
   # the open-egress policy is only sound alongside clone isolation.
   if ! run sbx create claude --name "$NAME" \
     -e "SBX_DEV_TOOLS_PLAYWRIGHT=$PLAYWRIGHT" \
+    ${PLAN_ENV[@]+"${PLAN_ENV[@]}"} \
     --kit "$CONFIG_KIT" \
     --kit "$DEV_TOOLS_KIT" \
     "$REPO_ROOT"; then
@@ -657,6 +669,10 @@ if [[ "$MODE" == create ]]; then
   VERIFY_GIT_DIR="$REPO_ROOT"
   VERIFIED=1
   if ! verify_token_access; then VERIFIED=0; fi
+
+  printf '\n'
+  step "Checking the generated instructions"
+  check_generated_guidance
 
   mkdir -p "$STATE_ROOT"
   printf '%s\n' "$FINDINGS" > "$STATE_FILE"

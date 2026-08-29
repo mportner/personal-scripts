@@ -1,4 +1,4 @@
-name: shellcheck
+name: checks
 
 on:
   push:
@@ -61,9 +61,14 @@ jobs:
       - name: Check the status line (POSIX sh)
         run: shellcheck -s sh claude-config-kit/files/home/.claude/statusline.sh
 
-      # The kit's startup command is shell embedded in YAML, so shellcheck
-      # cannot reach it in place. Pull it out and check it like any other file.
-      - name: Check the kit startup command
+      # The scripts the kit ships as files, run by the startup commands below.
+      - name: Check the kit startup scripts (POSIX sh)
+        run: shellcheck -s sh claude-config-kit/files/home/.claude-config-kit/*.sh
+
+      # The kit's startup commands are shell embedded in YAML, so shellcheck
+      # cannot reach them in place. Pull each one out and check it like any
+      # other file.
+      - name: Check the kit startup commands
         run: |
           # Distro package rather than pip: the runner's Python is
           # externally managed (PEP 668), so a plain `pip install` is refused.
@@ -71,11 +76,17 @@ jobs:
           python3 - <<'PY'
           import yaml
           spec = yaml.safe_load(open("claude-config-kit/spec.yaml"))
-          cmd = spec["setup"]["startup"][0]["command"]
-          assert cmd[:2] == ["sh", "-c"], f"unexpected startup form: {cmd[:2]}"
-          open("startup-extracted.sh", "w").write(cmd[2])
+          for i, entry in enumerate(spec["setup"]["startup"]):
+              cmd = entry["command"]
+              assert cmd[:2] == ["sh", "-c"], f"unexpected startup form: {cmd[:2]}"
+              open(f"startup-extracted-{i}.sh", "w").write(cmd[2])
           PY
-          shellcheck -s sh startup-extracted.sh
+          shellcheck -s sh startup-extracted-*.sh
+
+      # -P test resolves the harness's own `# shellcheck source=` comments,
+      # which are relative to test/ rather than to the checkout root.
+      - name: Check the test harness
+        run: shellcheck -x -s bash -P test test/*.sh
 
       # bash 3.2 has no mapfile/readarray and no associative arrays, and macOS
       # will not be getting a newer bash. Catching these here is cheaper than
@@ -85,9 +96,36 @@ jobs:
           # ^[^#]* keeps the match on the code side of any comment: these very
           # scripts have a header comment saying "no mapfile", which a naive
           # pattern would flag as a violation of itself.
+          # test/ is in the list because the harness runs on the same stock
+          # macOS bash the scripts it tests target. A test that needs bash 4 to
+          # run is a test that does not run where it matters most.
           if grep -nE '^[^#]*(\b(mapfile|readarray)\b|declare -A|local -A)' \
-               setup.sh uninstall.sh bin/*.sh lib/*.sh; then
+               setup.sh uninstall.sh bin/*.sh lib/*.sh test/*.sh; then
             echo "::error::bash 4+ construct found; these scripts target bash 3.2"
             exit 1
           fi
           echo "none found"
+
+  # A job of its own rather than another step above: the two are independent and
+  # fail differently. shellcheck is a lint over the whole tree; this reports
+  # which test file broke. Separate jobs run in parallel and both report even
+  # when one of them fails.
+  tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # Pinned for the same reason as the job above.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # ubuntu-latest ships jq, so this installs nothing. It is here to make the
+      # dependency visible and to fail loudly if a future runner image drops it:
+      # the credential and plan-name tests shell out to jq, and without it they
+      # would exercise the "jq is not installed" path and pass while checking
+      # nothing of what they are named for.
+      - name: Check jq is available
+        run: jq --version
+
+      - name: Run the tests
+        run: ./test/run.sh

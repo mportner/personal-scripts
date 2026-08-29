@@ -8,8 +8,8 @@
 # Sandbox and GitHub machinery shared by every sbx launcher in bin/: repo
 # argument parsing, deriving the repo from a checkout's origin, owner-scoped
 # token reference resolution, the op preflight, sandbox-scoped secret staging
-# and removal, its rollback, the ruleset check, and post-create token
-# verification.
+# and removal, its rollback, the ruleset check, post-create token verification,
+# and resolving the Claude plan name the sandbox should report.
 #
 # These functions operate on globals their caller sets (REPO_ARG, NAME,
 # SEED, TOKEN_REF, TOKEN_REF_EXPLICIT, TOKEN_REF_SOURCE, NO_TOKEN, DRY_RUN,
@@ -404,5 +404,148 @@ verify_token_access() {
 
   if (( degraded )); then
     note "see docs/sandbox-github-access.md for the full permission set"
+  fi
+}
+
+# Picks the Claude plan name the sandbox should report, and sets
+# SUBSCRIPTION_TYPE plus SUBSCRIPTION_TYPE_SOURCE when there is one. Both are
+# empty when nothing usable was found, which is not an error: the sandbox works
+# either way, only its banner is wrong.
+#
+# sbx renders the sandbox's OAuth credential file from a fixed template that has
+# no subscriptionType in it, so Claude Code cannot tell which plan the session
+# runs on and labels a subscription session "Claude API". The launchers pass
+# what this resolves to `sbx create -e`, and the kit's startup command writes it
+# into the credential file inside the container; see
+# claude-config-kit/files/home/.claude-config-kit/stamp-subscription-type.sh.
+#
+# Precedence: SBX_CLAUDE_SUBSCRIPTION_TYPE, then the host's own account record.
+# An explicit value that is malformed resolves to nothing rather than falling
+# back to detection: the caller asked for something specific, and quietly
+# sending a different plan name than the one they set is worse than sending
+# none.
+#
+# The account record is ~/.claude.json, which Claude Code writes and which holds
+# no tokens. Its oauthAccount.organizationType reads claude_max on a Max plan
+# and claude_pro on Pro, so the claude_ prefix comes off and the rest is the
+# plan name. The host keychain is deliberately not consulted: it holds the real
+# OAuth credential, and reading it through `security` both prompts and, if the
+# prompt is answered with Always Allow, widens that item's ACL to anything that
+# can invoke `security`. That is a poor trade for a label.
+#
+# Read by the sourcing launcher, which shellcheck cannot see when it lints this
+# file on its own.
+# shellcheck disable=SC2034
+resolve_subscription_type() {
+  local raw origin host_config cleaned
+  SUBSCRIPTION_TYPE=""
+  SUBSCRIPTION_TYPE_SOURCE=""
+
+  if [[ -n "${SBX_CLAUDE_SUBSCRIPTION_TYPE:-}" ]]; then
+    raw="$SBX_CLAUDE_SUBSCRIPTION_TYPE"
+    origin="SBX_CLAUDE_SUBSCRIPTION_TYPE"
+  else
+    host_config="$HOME/.claude.json"
+    [[ -f "$host_config" ]] || return 0
+    if ! command -v jq >/dev/null 2>&1; then
+      note "plan      not detected, jq is not installed on the host"
+      return 0
+    fi
+    raw="$(jq -r '.oauthAccount.organizationType // empty' "$host_config" 2>/dev/null || printf '')"
+    [[ -n "$raw" ]] || return 0
+    raw="${raw#claude_}"
+    # A label for the preflight line, not a path to open, so the tilde is meant
+    # to stay literal.
+    # shellcheck disable=SC2088
+    origin="~/.claude.json"
+  fi
+
+  # Plan names are lower case words (max, pro, team, enterprise). Anything else
+  # is refused here rather than sent into the sandbox, where it would end up in
+  # a JSON credential file.
+  #
+  # Filtered with `tr` under LC_ALL=C rather than a [!a-z0-9_] glob, which is
+  # not the test it looks like: in a UTF-8 locale the a-z range collates
+  # case-insensitively, so the glob accepts MAX and every other upper-case
+  # spelling. The C locale makes the range the 26 bytes it appears to be.
+  #
+  # Written as its own command so a `tr` that cannot run refuses the value
+  # rather than accepting it: an unreachable filter returns the empty string,
+  # which is what a valid plan name returns too. Same shape as the check in
+  # claude-config-kit's stamp-subscription-type.sh, for the same reason.
+  if ! cleaned="$(printf '%s' "$raw" | LC_ALL=C tr -d 'a-z0-9_')" \
+     || [[ -z "$raw" || -n "$cleaned" ]]; then
+    note "plan      ignoring '$raw' from $origin, that is not a plan name"
+    return 0
+  fi
+
+  SUBSCRIPTION_TYPE="$raw"
+  SUBSCRIPTION_TYPE_SOURCE="$origin"
+}
+
+# The preflight half of the plan-name fix: resolve it, say what was found, and
+# build the `sbx create` arguments that carry it. Both launchers do exactly this
+# and nothing else with it, so it lives here rather than as the same twelve
+# lines in each. PLAN_ENV is expanded at the create call with the
+# ${a[@]+"${a[@]}"} guard bash 3.2 needs for a possibly-empty array under set -u,
+# so an undetected plan passes no argument at all rather than an empty one.
+#
+# Read by the sourcing launcher, which shellcheck cannot see when it lints this
+# file on its own.
+# shellcheck disable=SC2034
+report_subscription_type() {
+  resolve_subscription_type
+  PLAN_ENV=()
+  if [[ -n "$SUBSCRIPTION_TYPE" ]]; then
+    note "plan      $SUBSCRIPTION_TYPE, read from $SUBSCRIPTION_TYPE_SOURCE"
+    PLAN_ENV=(-e "SBX_CLAUDE_SUBSCRIPTION_TYPE=$SUBSCRIPTION_TYPE")
+  else
+    note "plan      not detected, so the sandbox banner will read 'Claude API'"
+    note "          set SBX_CLAUDE_SUBSCRIPTION_TYPE to fix that"
+  fi
+}
+
+# The first line claude-config-kit leaves on the file it trims. Duplicated from
+# the script rather than shared, because the two run in different places: that
+# one inside the container as POSIX sh, this one on the host. It is a wire
+# format between them, so changing it means changing both.
+GUIDANCE_MARKER='<!-- claude-config-kit: trimmed sbx project guidance -->'
+
+# Says whether the kit actually trimmed the CLAUDE.md sbx generates above the
+# workspace. Run from inside the sandbox after creation, for the same reason
+# verify_token_access is: nothing before this point exercised it.
+#
+# The failure this exists to catch is silent by construction. The trim declines
+# to act on a file it does not recognise, which is the right answer for a file
+# another tool owns, but it means a change to sbx's template turns the fix off
+# with one line in a container log nobody reads, and the invented project
+# guidance comes back unannounced. That is the exact complaint the trim exists
+# to answer, so it must not be able to return quietly.
+check_generated_guidance() {
+  local first
+  # Single-quoted on purpose: WORKSPACE_DIR is the container's, and the sandbox
+  # is the only place that knows where its workspace was mounted. Expanding it
+  # here would read the host's environment, where it does not exist.
+  # shellcheck disable=SC2016
+  first="$(sbx exec "$NAME" -- sh -c \
+    'head -n 1 "$(dirname "$WORKSPACE_DIR")/CLAUDE.md" 2>/dev/null' 2>/dev/null || printf '')"
+
+  if [[ "$first" == "$GUIDANCE_MARKER" ]]; then
+    note "guidance  trimmed, so only the sandbox instructions above the"
+    note "          workspace are loaded, not guessed project ones"
+  elif [[ -z "$first" ]]; then
+    # No file above the workspace, or the read itself failed. Neither is worth a
+    # warning: there is nothing there to mislead the agent.
+    note "guidance  nothing generated above the workspace"
+  else
+    printf '    WARNING  the CLAUDE.md sbx generates above the workspace was not\n' >&2
+    printf '             trimmed, so the project guidance it guesses at is loaded\n' >&2
+    printf '             into every session here, alongside the instruction files\n' >&2
+    printf '             the repository ships. Its first line reads:\n' >&2
+    printf '               %s\n' "$first" >&2
+    printf '             claude-config-kit only rewrites the file it recognises,\n' >&2
+    printf '             so sbx has most likely changed its template. The trim is\n' >&2
+    printf '             claude-config-kit/files/home/.claude-config-kit/\n' >&2
+    printf '             trim-sandbox-guidance.sh\n' >&2
   fi
 }

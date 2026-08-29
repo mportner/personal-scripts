@@ -23,12 +23,17 @@
 # manifest, lockfile, or container image for Dependabot to read. The single
 # workflow is what it tracks.
 #
-# Why this exists at all: .github/workflows/shellcheck.yml pins actions/checkout
-# to a commit SHA rather than a tag, because a tag is a mutable ref that a
+# Why this exists at all: .github/workflows/checks.yml pins actions/checkout to
+# a commit SHA rather than a tag, because a tag is a mutable ref that a
 # compromised upstream can repoint. A pin that nobody updates is how you end up
 # on a two-year-old action, so Dependabot owns the refresh -- it rewrites both
 # the SHA and the trailing "# vX.Y.Z" comment, which is exactly the maintenance
-# the pin would otherwise need by hand.
+# the pin would otherwise need by hand. Both jobs in that workflow check out
+# with the same pin, and Dependabot rewrites every occurrence, so adding a job
+# costs nothing here.
+#
+# directory: / is the whole .github/workflows directory rather than a named file,
+# so renaming or adding a workflow does not need a change here.
 version: 2
 updates:
   - package-ecosystem: github-actions

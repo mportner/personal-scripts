@@ -116,6 +116,11 @@ Environment:
   SBX_GH_TOKEN_REF          Fallback when no owner-specific one is set.
   RESEARCH_SEED_ROOT        Seed clone directory
                             (default ~/.local/state/sbx-research).
+  SBX_CLAUDE_SUBSCRIPTION_TYPE
+                            Plan name the sandbox banner should report (max,
+                            pro, ...). Defaults to the plan on the host's own
+                            account. sbx stages no plan of its own, so without
+                            it the banner reads "Claude API".
 
 A fine-grained token has one resource owner, so repos under a personal account
 and repos under an organisation need separate tokens. Set one variable per
@@ -298,6 +303,12 @@ Do not point this at your default token: this sandbox reads untrusted web
 content, and the global token carries repo and admin rights."
 fi
 
+# Only the banner depends on this, so an unresolved plan is a note rather than a
+# failure. It also sets PLAN_ENV for the create below. See
+# resolve_subscription_type in lib/sandbox-launcher.sh for why the host keychain
+# is not consulted.
+report_subscription_type
+
 # --- warn when the default branch is unprotected ----------------------------
 check_ruleset
 
@@ -343,6 +354,7 @@ step "Creating sandbox"
 # about code; they do not drive a browser.
 if ! run sbx create claude --clone --name "$NAME" \
   -e SBX_DEV_TOOLS_PLAYWRIGHT=0 \
+  ${PLAN_ENV[@]+"${PLAN_ENV[@]}"} \
   --kit "$CONFIG_KIT" \
   --kit "$DEV_TOOLS_KIT" \
   --kit "$RESEARCH_KIT" \
@@ -360,6 +372,10 @@ if (( DRY_RUN )); then exit 0; fi
 # exists only for this repo and is worth nothing without it.
 VERIFY_GIT_DIR="$SEED"
 verify_token_access
+
+printf '\n'
+step "Checking the generated instructions"
+check_generated_guidance
 
 printf '\n'
 step "Ready"

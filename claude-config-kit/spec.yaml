@@ -2,9 +2,11 @@
 # (a custom three-line status line plus preferred settings) into every sandbox
 # created with it.
 #
-# Two static files are copied to /home/agent at container creation:
+# Four static files are copied to /home/agent at container creation:
 #   files/home/.claude/statusline.sh              the status line script
 #   files/home/.claude-config-kit/settings.json   settings to merge in
+#   files/home/.claude-config-kit/trim-sandbox-guidance.sh
+#   files/home/.claude-config-kit/stamp-subscription-type.sh
 #
 # The startup command below merges them into ~/.claude/settings.json, then
 # installs whatever plugins that file enables. It jq-merges rather than
@@ -16,11 +18,25 @@
 # plugins should be active, it does not install them. See the comment on that
 # block for why a settings-only kit gets flaky plugins.
 #
+# The two scripts run as startup commands of their own, repairing what the
+# sandbox does to Claude Code's own inputs. Each carries its reasoning at the
+# top of the file:
+#
+#   trim-sandbox-guidance.sh    strips the project guidance sbx invents in the
+#                               CLAUDE.md it generates ABOVE the workspace,
+#                               which Claude Code loads as project instructions
+#   stamp-subscription-type.sh  records the plan in the OAuth credential file,
+#                               whose sbx template omits it, so the banner stops
+#                               calling a subscription session "Claude API"
+#
+# They are files rather than more inline shell because they are long enough to
+# be worth testing, and test/ runs them directly against fixtures.
+#
 # Apply with:  sbx run claude --kit ~/personal-scripts/claude-config-kit
 schemaVersion: "2"
 kind: mixin
 name: claude-config
-version: "0.3.0"
+version: "0.4.0"
 displayName: Claude Code Config
 description: Installs a custom status line, preferred settings, and the plugins they enable.
 
@@ -128,3 +144,25 @@ setup:
           done
       user: "agent"
       description: Merge settings and install the plugins they enable
+
+    # Both scripts already exit 0 on every path, including the ones where they
+    # decline to act. The `; exit 0` is the belt: /etc/durable-startup.d/run.sh
+    # aborts the whole chain on the first non-zero status, taking out every
+    # later kit's commands, and nothing either script does is worth that.
+    #
+    # Run as agent, like the merge above: both write files under the agent's
+    # home or beside a workspace it owns, and a root-owned file in either place
+    # would break Claude Code's own writes.
+    - command:
+        - "sh"
+        - "-c"
+        - 'sh "$HOME/.claude-config-kit/trim-sandbox-guidance.sh"; exit 0'
+      user: "agent"
+      description: Trim the project guidance sbx generates above the workspace
+
+    - command:
+        - "sh"
+        - "-c"
+        - 'sh "$HOME/.claude-config-kit/stamp-subscription-type.sh"; exit 0'
+      user: "agent"
+      description: Record the subscription plan in the staged credential file
