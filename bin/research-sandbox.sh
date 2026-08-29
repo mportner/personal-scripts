@@ -116,6 +116,11 @@ Environment:
   SBX_GH_TOKEN_REF          Fallback when no owner-specific one is set.
   RESEARCH_SEED_ROOT        Seed clone directory
                             (default ~/.local/state/sbx-research).
+  SBX_CLAUDE_SUBSCRIPTION_TYPE
+                            Plan name the sandbox banner should report (max,
+                            pro, ...). Defaults to the plan on the host's own
+                            account. sbx stages no plan of its own, so without
+                            it the banner reads "Claude API".
 
 A fine-grained token has one resource owner, so repos under a personal account
 and repos under an organisation need separate tokens. Set one variable per
@@ -298,6 +303,17 @@ Do not point this at your default token: this sandbox reads untrusted web
 content, and the global token carries repo and admin rights."
 fi
 
+# Only the banner depends on this, so an unresolved plan is a note rather than a
+# failure. See resolve_subscription_type in lib/sandbox-launcher.sh for why the
+# host keychain is not consulted.
+resolve_subscription_type
+if [[ -n "$SUBSCRIPTION_TYPE" ]]; then
+  note "plan      $SUBSCRIPTION_TYPE, read from $SUBSCRIPTION_TYPE_SOURCE"
+else
+  note "plan      not detected, so the sandbox banner will read 'Claude API'"
+  note "          set SBX_CLAUDE_SUBSCRIPTION_TYPE to fix that"
+fi
+
 # --- warn when the default branch is unprotected ----------------------------
 check_ruleset
 
@@ -341,8 +357,16 @@ step "Creating sandbox"
 # SBX_DEV_TOOLS_PLAYWRIGHT=0 halves the creation time (roughly 30s to 15s) by
 # skipping the browser system libraries. Research sandboxes read and reason
 # about code; they do not drive a browser.
+# Empty when no plan was resolved, so nothing is passed at all rather than an
+# empty variable the container would have to interpret. Expanded with the
+# ${a[@]+...} guard bash 3.2 needs for a possibly-empty array under set -u.
+PLAN_ENV=()
+if [[ -n "$SUBSCRIPTION_TYPE" ]]; then
+  PLAN_ENV=(-e "SBX_CLAUDE_SUBSCRIPTION_TYPE=$SUBSCRIPTION_TYPE")
+fi
 if ! run sbx create claude --clone --name "$NAME" \
   -e SBX_DEV_TOOLS_PLAYWRIGHT=0 \
+  ${PLAN_ENV[@]+"${PLAN_ENV[@]}"} \
   --kit "$CONFIG_KIT" \
   --kit "$DEV_TOOLS_KIT" \
   --kit "$RESEARCH_KIT" \

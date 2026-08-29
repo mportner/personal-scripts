@@ -17,6 +17,7 @@ stock system with no interpreter to install first.
 | [`dev-tools-kit/`](dev-tools-kit/) | sbx mixin kit installing Node 24, pnpm, gh and the projects' supply-chain policy |
 | [`research-kit/`](research-kit/) | sbx mixin kit opening full network egress for research and planning sandboxes |
 | [`lib/`](lib/) | shell libraries the launchers source; never executed, never on `PATH` |
+| [`test/`](test/) | the test suite and its runner, `./test/run.sh` |
 | [`docs/sandbox-github-access.md`](docs/sandbox-github-access.md) | the GitHub credential model both launchers share |
 | [`setup.sh`](setup.sh) | installer: symlinks `bin/` onto `PATH`, manages a block in `~/.zshrc` |
 | [`uninstall.sh`](uninstall.sh) | reverses `setup.sh` |
@@ -100,6 +101,21 @@ and keep the rest, re-run `./setup.sh --no-sandbox` instead.
 - [`sbx`](https://docs.docker.com/ai/sandboxes/), optional: only for the kits
   and the two sandbox launchers
 
+## Tests
+
+```bash
+./test/run.sh                                  # everything
+./test/run.sh test/trim_sandbox_guidance_test.sh   # one file
+```
+
+Plain bash and `jq`, no test framework to install, so it runs on a stock macOS
+and on a CI runner unchanged. `.github/workflows/checks.yml` runs it on every
+push and pull request alongside shellcheck.
+
+The suite covers the parts with logic worth pinning down: the two scripts
+`claude-config-kit` runs inside a sandbox, and the plan-name resolution the
+launchers share. The launchers themselves are exercised with `--dry-run`.
+
 ## The scripts
 
 ### `brew-upgrade-safe`
@@ -162,6 +178,14 @@ Set one reference per owner, which both commands read:
 export SBX_GH_TOKEN_REF_MPORTNER="op://Private/gh-agent-personal/credential"
 ```
 
+Both also tell the sandbox which Claude plan the session runs on, since sbx
+stages the OAuth credential without one and the banner then reads
+"Claude API" on a subscription session. The plan is read from the host's own
+account record (`~/.claude.json`), so there is nothing to configure; set
+`SBX_CLAUDE_SUBSCRIPTION_TYPE` to override it, and see
+[`claude-config-kit`](claude-config-kit/README.md) for what the sandbox does
+with it.
+
 `project-sandbox` also checks what the checkout is about to hand over. It scans
 for gitignored files that look like credentials (`git status` alone will not
 show you those) and warns on a dirty tree, since `claude --worktree` branches
@@ -178,6 +202,14 @@ An sbx mixin kit that installs a three-line Claude Code status line and a set of
 preferred settings into every sandbox created with it. See its
 [README](claude-config-kit/README.md) for the design notes and the extracted kit
 spec reference.
+
+It also repairs two things sbx does to Claude Code's own inputs. It trims the
+`CLAUDE.md` sbx generates one directory **above** the workspace, which Claude
+Code loads as project instructions even though no project wrote it and its
+build and package-manager advice is guessed from file extensions (`npm install`
+in a pnpm workspace). What sbx is actually authoritative about, the network,
+git authentication and workspace mode, is kept. And it records the subscription
+plan in the staged credential file, whose sbx template omits it.
 
 > **If you are not the author:** the shipped `settings.json` enables the
 > `devpowers` plugin from the `mportner/agentpowers` marketplace, which is a

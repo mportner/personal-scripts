@@ -139,6 +139,11 @@ Environment:
   SBX_GH_TOKEN_REF          Fallback when no owner-specific one is set.
   SBX_DEV_STATE_ROOT        Preflight state directory
                             (default ~/.local/state/sbx-dev).
+  SBX_CLAUDE_SUBSCRIPTION_TYPE
+                            Plan name the sandbox banner should report (max,
+                            pro, ...). Defaults to the plan on the host's own
+                            account. sbx stages no plan of its own, so without
+                            it the banner reads "Claude API".
 
 The owner comes from the checkout's origin remote, so there is nothing to pass.
 A non-GitHub origin fails preflight, and a checkout with no origin needs
@@ -532,6 +537,17 @@ The global token is not a fallback here: keeping it out of development
 sandboxes is the whole reason this command exists."
 fi
 
+# Only the banner depends on this, so an unresolved plan is a note rather than a
+# failure. See resolve_subscription_type in lib/sandbox-launcher.sh for why the
+# host keychain is not consulted.
+resolve_subscription_type
+if [[ -n "$SUBSCRIPTION_TYPE" ]]; then
+  note "plan      $SUBSCRIPTION_TYPE, read from $SUBSCRIPTION_TYPE_SOURCE"
+else
+  note "plan      not detected, so the sandbox banner will read 'Claude API'"
+  note "          set SBX_CLAUDE_SUBSCRIPTION_TYPE to fix that"
+fi
+
 # A global secret is inherited by any sandbox that has none of its own, which
 # makes the narrow token above a courtesy rather than a boundary. Reported
 # rather than deleted, because it is shared state and other sandboxes may still
@@ -638,10 +654,18 @@ if [[ "$MODE" == create ]]; then
 
   printf '\n'
   step "Creating sandbox"
+  # Empty when no plan was resolved, so nothing is passed at all rather than an
+  # empty variable the container would have to interpret. Expanded with the
+  # ${a[@]+...} guard bash 3.2 needs for a possibly-empty array under set -u.
+  PLAN_ENV=()
+  if [[ -n "$SUBSCRIPTION_TYPE" ]]; then
+    PLAN_ENV=(-e "SBX_CLAUDE_SUBSCRIPTION_TYPE=$SUBSCRIPTION_TYPE")
+  fi
   # No --clone and no research-kit: the workspace is the checkout itself, and
   # the open-egress policy is only sound alongside clone isolation.
   if ! run sbx create claude --name "$NAME" \
     -e "SBX_DEV_TOOLS_PLAYWRIGHT=$PLAYWRIGHT" \
+    ${PLAN_ENV[@]+"${PLAN_ENV[@]}"} \
     --kit "$CONFIG_KIT" \
     --kit "$DEV_TOOLS_KIT" \
     "$REPO_ROOT"; then

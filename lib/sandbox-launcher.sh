@@ -8,8 +8,8 @@
 # Sandbox and GitHub machinery shared by every sbx launcher in bin/: repo
 # argument parsing, deriving the repo from a checkout's origin, owner-scoped
 # token reference resolution, the op preflight, sandbox-scoped secret staging
-# and removal, its rollback, the ruleset check, and post-create token
-# verification.
+# and removal, its rollback, the ruleset check, post-create token verification,
+# and resolving the Claude plan name the sandbox should report.
 #
 # These functions operate on globals their caller sets (REPO_ARG, NAME,
 # SEED, TOKEN_REF, TOKEN_REF_EXPLICIT, TOKEN_REF_SOURCE, NO_TOKEN, DRY_RUN,
@@ -405,4 +405,74 @@ verify_token_access() {
   if (( degraded )); then
     note "see docs/sandbox-github-access.md for the full permission set"
   fi
+}
+
+# Picks the Claude plan name the sandbox should report, and sets
+# SUBSCRIPTION_TYPE plus SUBSCRIPTION_TYPE_SOURCE when there is one. Both are
+# empty when nothing usable was found, which is not an error: the sandbox works
+# either way, only its banner is wrong.
+#
+# sbx renders the sandbox's OAuth credential file from a fixed template that has
+# no subscriptionType in it, so Claude Code cannot tell which plan the session
+# runs on and labels a subscription session "Claude API". The launchers pass
+# what this resolves to `sbx create -e`, and the kit's startup command writes it
+# into the credential file inside the container; see
+# claude-config-kit/files/home/.claude-config-kit/stamp-subscription-type.sh.
+#
+# Precedence: SBX_CLAUDE_SUBSCRIPTION_TYPE, then the host's own account record.
+# An explicit value that is malformed resolves to nothing rather than falling
+# back to detection: the caller asked for something specific, and quietly
+# sending a different plan name than the one they set is worse than sending
+# none.
+#
+# The account record is ~/.claude.json, which Claude Code writes and which holds
+# no tokens. Its oauthAccount.organizationType reads claude_max on a Max plan
+# and claude_pro on Pro, so the claude_ prefix comes off and the rest is the
+# plan name. The host keychain is deliberately not consulted: it holds the real
+# OAuth credential, and reading it through `security` both prompts and, if the
+# prompt is answered with Always Allow, widens that item's ACL to anything that
+# can invoke `security`. That is a poor trade for a label.
+#
+# Read by the sourcing launcher, which shellcheck cannot see when it lints this
+# file on its own.
+# shellcheck disable=SC2034
+resolve_subscription_type() {
+  local raw origin host_config
+  SUBSCRIPTION_TYPE=""
+  SUBSCRIPTION_TYPE_SOURCE=""
+
+  if [[ -n "${SBX_CLAUDE_SUBSCRIPTION_TYPE:-}" ]]; then
+    raw="$SBX_CLAUDE_SUBSCRIPTION_TYPE"
+    origin="SBX_CLAUDE_SUBSCRIPTION_TYPE"
+  else
+    host_config="$HOME/.claude.json"
+    [[ -f "$host_config" ]] || return 0
+    if ! command -v jq >/dev/null 2>&1; then
+      note "plan      not detected, jq is not installed on the host"
+      return 0
+    fi
+    raw="$(jq -r '.oauthAccount.organizationType // empty' "$host_config" 2>/dev/null || printf '')"
+    [[ -n "$raw" ]] || return 0
+    raw="${raw#claude_}"
+    # A label for the preflight line, not a path to open, so the tilde is meant
+    # to stay literal.
+    # shellcheck disable=SC2088
+    origin="~/.claude.json"
+  fi
+
+  # Plan names are lower case words (max, pro, team, enterprise). Anything else
+  # is refused here rather than sent into the sandbox, where it would end up in
+  # a JSON credential file.
+  #
+  # Filtered with `tr` under LC_ALL=C rather than a [!a-z0-9_] glob, which is
+  # not the test it looks like: in a UTF-8 locale the a-z range collates
+  # case-insensitively, so the glob accepts MAX and every other upper-case
+  # spelling. The C locale makes the range the 26 bytes it appears to be.
+  if [[ -z "$raw" || -n "$(printf '%s' "$raw" | LC_ALL=C tr -d 'a-z0-9_')" ]]; then
+    note "plan      ignoring '$raw' from $origin, that is not a plan name"
+    return 0
+  fi
+
+  SUBSCRIPTION_TYPE="$raw"
+  SUBSCRIPTION_TYPE_SOURCE="$origin"
 }
