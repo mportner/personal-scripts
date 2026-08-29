@@ -56,8 +56,8 @@ parse_repo_arg() {
   [[ -n "$owner" && -n "$repo" ]] || die "cannot parse owner/repo from: $REPO_ARG"
 }
 
-# Prints the root of the checkout containing DIR (default: the current
-# directory), or fails when there is no repository there.
+# Prints the root of the checkout containing the current directory, or fails
+# when there is no repository there.
 #
 # Derived from --git-common-dir rather than --show-toplevel, which reports the
 # linked worktree when run from inside one. The worktree is the wrong thing to
@@ -70,13 +70,12 @@ parse_repo_arg() {
 # gained in 2.31: --git-common-dir answers a bare ".git" when the cwd is the top
 # of the tree, and dirname of that is "." rather than the repository.
 git_repo_root() {
-  local dir common
-  dir="${1:-$PWD}"
-  common="$(git -C "$dir" rev-parse --git-common-dir 2>/dev/null)" || return 1
+  local common
+  common="$(git rev-parse --git-common-dir 2>/dev/null)" || return 1
   [[ -n "$common" ]] || return 1
   case "$common" in
     /*) ;;
-    *)  common="$(cd -- "$dir" && pwd -P)/$common" ;;
+    *)  common="$(pwd -P)/$common" ;;
   esac
   (cd -- "$(dirname -- "$common")" && pwd -P) 2>/dev/null || return 1
 }
