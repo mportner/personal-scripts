@@ -8,7 +8,8 @@ sandbox created with it, surviving sandbox recreation.
 sbx run claude --kit ~/personal-scripts/claude-config-kit
 ```
 
-Or source `../shell/sbx-kit-wrapper.zsh` and just run `sbx run claude`.
+`bin/project-sandbox.sh` and `bin/research-sandbox.sh` both pass it, so a
+sandbox from either launcher already has it.
 
 ## What it installs
 

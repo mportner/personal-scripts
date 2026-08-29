@@ -10,8 +10,9 @@ sbx create claude \
   --kit ~/personal-scripts/dev-tools-kit .
 ```
 
-Or source `../shell/sbx-kit-wrapper.zsh` and just run `sbx create claude .`,
-which supplies both.
+`bin/project-sandbox.sh` and `bin/research-sandbox.sh` both pass this kit
+alongside `claude-config-kit`, so a sandbox from either launcher already has
+the pair.
 
 ## Why
 

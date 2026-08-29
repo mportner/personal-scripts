@@ -17,7 +17,8 @@
 #   which repos     a fine-grained PAT, stored sandbox-scoped via `sbx secret`
 #   which branches  a repository ruleset carrying the `pull_request` rule
 # GitHub tokens have no branch granularity, so the ruleset is what actually
-# stops a push to the default branch. bin/research-sandbox.sh wires up both.
+# stops a push to the default branch. bin/research-sandbox.sh wires up both,
+# and docs/sandbox-github-access.md is the full write-up.
 schemaVersion: "2"
 kind: mixin
 name: claude-research

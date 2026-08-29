@@ -6,6 +6,8 @@
 #
 # Copyright (c) 2026 Michael Portner
 #
+# requires: sbx
+#
 # Creates an sbx sandbox for research and planning: open network egress, a
 # private clone of a GitHub repo, and no access to the host filesystem.
 #
@@ -32,10 +34,9 @@
 # node_modules isolation is inert here, since that only acts on bind-mounted
 # (virtiofs) paths and a --clone workspace is already on a container volume.
 #
-# GitHub tokens have no branch granularity: a token that can push at all can
-# push anywhere in the repos it covers. What actually stops a push to the
-# default branch is a repository ruleset carrying the `pull_request` rule with
-# an empty bypass list. This script warns when the target repo lacks one.
+# The credential half of that last point is shared with project-sandbox and is
+# written up in docs/sandbox-github-access.md, including why a ruleset rather
+# than the token is what keeps the agent off the default branch.
 #
 # Targets bash 3.2, the version macOS ships.
 set -euo pipefail
@@ -122,32 +123,9 @@ owner and the right one is chosen from the repo argument. --token-ref beats
 both. After creation the token is checked from inside the sandbox: an
 unreachable repo aborts, missing read permissions warn.
 
-The token needs these permissions on the repos you want researched:
-
-Levels are the labels GitHub's own token UI uses, so they can be selected
-verbatim. Read and write always implies read; the reason each one needs write
-is named rather than left to inference.
-
-  Metadata          Read-only        mandatory, selected for you
-  Contents          Read and write   read to clone, write to push
-  Pull requests     Read and write   write to create, review and merge
-  Issues            Read and write   write to file follow-ups and set labels
-  Commit statuses   Read-only        checks posted as a commit status
-  Actions           Read-only        gh run view, job logs, and reading CI
-  Workflows         Read and write   write to push under .github/workflows
-
-The credential model these permissions sit in is written up in full in
+The credential model, the permission set the token needs, and why `gh pr
+checks` cannot work from a fine-grained token are documented in
 docs/sandbox-github-access.md.
-
-There is no Checks permission for fine-grained tokens, only for GitHub Apps,
-so `gh pr checks` cannot work from one: it resolves statusCheckRollup, which
-reaches the Checks API and answers 403. Read CI through the Actions API:
-
-  gh api repos/OWNER/REPO/actions/runs?head_sha=SHA \
-    --jq '.workflow_runs[] | "\(.name): \(.status)/\(.conclusion)"'
-
-Do not grant Administration. Branch protection comes from the repo's ruleset,
-not the token, and a token that can edit the ruleset can remove its own guard.
 EOF
 }
 
