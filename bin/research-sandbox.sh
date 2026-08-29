@@ -60,6 +60,14 @@ REPO_DIR="$(cd -- "$(dirname -- "$SELF")/.." && pwd -P)"
 CONFIG_KIT="$REPO_DIR/claude-config-kit"
 DEV_TOOLS_KIT="$REPO_DIR/dev-tools-kit"
 RESEARCH_KIT="$REPO_DIR/research-kit"
+
+# Consumed by die() in lib/output.sh.
+PROG="research-sandbox"
+# shellcheck source=../lib/output.sh
+source "$REPO_DIR/lib/output.sh"
+# shellcheck source=../lib/sandbox-launcher.sh
+source "$REPO_DIR/lib/sandbox-launcher.sh"
+
 SEED_ROOT="${RESEARCH_SEED_ROOT:-$HOME/.local/state/sbx-research}"
 # Left empty here on purpose. The environment defaults are resolved once the
 # owner is known, so an owner-specific reference can outrank the generic one.
@@ -146,15 +154,6 @@ run() {
   "$@"
 }
 
-die() { printf 'research-sandbox: %s\n' "$1" >&2; exit 1; }
-note() { printf '    %s\n' "$1"; }
-step() { printf '==> %s\n' "$1"; }
-
-# An option that consumes a value must confirm one is there. Otherwise the
-# inner `shift` empties "$@" and the loop's own `shift` fails, which under
-# set -e exits the script silently with no diagnostic at all.
-need_value() { (( $# >= 2 )) || die "$1 needs a value"; }
-
 while (( $# > 0 )); do
   case "$1" in
     -n|--name)      need_value "$@"; NAME="$2"; shift ;;
@@ -183,21 +182,6 @@ done
 
 command -v sbx >/dev/null 2>&1 || die "sbx is not installed"
 command -v git >/dev/null 2>&1 || die "git is not installed"
-
-# Defined here, above --destroy, because that is the first caller. It used to
-# live beside rollback() further down, which --destroy never reaches: it exits
-# before that point, so the call resolved to nothing. `if` exempts its own
-# condition from set -e, so the 127 became a plain false and the destroy path
-# reported "no scoped secret left behind" without ever having looked. Keep this
-# above both callers.
-#
-# Exact string compare rather than a regex: sandbox names may contain periods
-# and plus signs, which are ERE metacharacters. "a+b" as a pattern means "one
-# or more a, then b" and would not match the literal scope "a+b", so the
-# post-delete check would report a credential gone while it was still stored.
-secret_present() {
-  sbx secret ls 2>/dev/null | awk -v n="$NAME" 'NR > 1 && $1 == n { found = 1 } END { exit !found }'
-}
 
 # --- destroy ----------------------------------------------------------------
 
@@ -259,59 +243,14 @@ fi
 
 [[ -n "${REPO_ARG:-}" ]] || { usage >&2; exit 2; }
 
-case "$REPO_ARG" in
-  https://github.com/*)
-    slug="${REPO_ARG#https://github.com/}"
-    ;;
-  git@github.com:*)
-    slug="${REPO_ARG#git@github.com:}"
-    ;;
-  */*)
-    slug="$REPO_ARG"
-    ;;
-  *)
-    die "REPO must be owner/repo or a github.com URL (got: $REPO_ARG)"
-    ;;
-esac
-slug="${slug%.git}"
-slug="${slug%/}"
+parse_repo_arg
 
-# Exactly one slash. owner and repo are often identical (cli/cli), so that is
-# not a parse failure.
-case "$slug" in
-  */*/*) die "expected owner/repo, got a deeper path: $REPO_ARG" ;;
-  */*)   ;;
-  *)     die "expected owner/repo, got: $REPO_ARG" ;;
-esac
-
-owner="${slug%%/*}"
-repo="${slug##*/}"
-[[ -n "$owner" && -n "$repo" ]] || die "cannot parse owner/repo from: $REPO_ARG"
-
-# A fine-grained token has exactly one resource owner, fixed at creation, so a
-# personal account and an organisation need separate tokens. Pick by owner
-# rather than making the caller remember which default is exported: the seed
-# clone below runs on the host with the host's own credentials, and so does the
-# ruleset check, so a mismatched token is not caught until the agent tries to
-# push from inside the sandbox, long after the work is done.
-#
-# Precedence: --token-ref, then RESEARCH_GH_TOKEN_REF_<OWNER>, then
-# RESEARCH_GH_TOKEN_REF. The owner is upper-cased with anything outside A-Z0-9
-# folded to _, so mportner becomes RESEARCH_GH_TOKEN_REF_MPORTNER.
-owner_key="$(printf '%s' "$owner" | LC_ALL=C tr '[:lower:]' '[:upper:]' \
-  | LC_ALL=C tr -c 'A-Z0-9' '_')"
-if (( TOKEN_REF_EXPLICIT )); then
-  TOKEN_REF_SOURCE="--token-ref"
-else
-  owner_var="RESEARCH_GH_TOKEN_REF_$owner_key"
-  if [[ -n "${!owner_var:-}" ]]; then
-    TOKEN_REF="${!owner_var}"
-    TOKEN_REF_SOURCE="$owner_var"
-  elif [[ -n "${RESEARCH_GH_TOKEN_REF:-}" ]]; then
-    TOKEN_REF="$RESEARCH_GH_TOKEN_REF"
-    TOKEN_REF_SOURCE="RESEARCH_GH_TOKEN_REF"
-  fi
-fi
+# Picked by owner rather than making the caller remember which default is
+# exported: the seed clone below runs on the host with the host's own
+# credentials, and so does the ruleset check, so a mismatched token is not
+# caught until the agent tries to push from inside the sandbox, long after the
+# work is done.
+resolve_token_ref
 
 # Always HTTPS, even when the caller passed an SSH URL. This is load-bearing,
 # not a normalisation nicety: the sandbox inherits origin from this seed clone,
@@ -339,13 +278,7 @@ if (( NO_TOKEN )); then
   note "token     none (--no-token): push and PR will not work"
 elif [[ -n "$TOKEN_REF" ]]; then
   case "$TOKEN_REF" in
-    op://*)
-      command -v op >/dev/null 2>&1 || die \
-"op is not installed, so the 1Password reference cannot be resolved.
-  brew install 1password-cli
-then enable 'Integrate with 1Password CLI' in the 1Password app's Developer
-settings. Or pass --no-token to create a sandbox with no GitHub credential."
-      ;;
+    op://*) check_op_installed ;;
   esac
   note "token     $TOKEN_REF"
   note "          via $TOKEN_REF_SOURCE, scoped to this sandbox"
@@ -360,53 +293,7 @@ content, and the global token carries repo and admin rights."
 fi
 
 # --- warn when the default branch is unprotected ----------------------------
-# A narrow token still permits pushing anywhere in the repos it covers.
-# The ruleset is the only thing keeping the agent off the default branch.
-
-# jq is only needed here, so it is checked here rather than as a hard
-# dependency. Without the guard a missing jq yields an empty rule list, which
-# reads as "no ruleset" and fires a warning that is not true.
-if ! command -v gh >/dev/null 2>&1; then
-  note "ruleset   skipped, gh not installed on the host"
-elif ! command -v jq >/dev/null 2>&1; then
-  note "ruleset   skipped, jq not installed on the host"
-else
-  # Captured with stderr so a 403 can be told apart from a 404. Rulesets and
-  # branch protection on a private repo need GitHub Team or Pro, so a private
-  # repo on a free plan reports "Upgrade to GitHub Pro". Reporting that as an
-  # access problem would send you looking for the wrong fix, and it is the more
-  # serious case: the protection cannot be added at all, so the token's push
-  # access to the default branch is unbounded.
-  if rules="$(gh api "repos/$owner/$repo/rulesets" 2>&1)"; then
-    protected=0
-    for id in $(printf '%s' "$rules" | jq -r '.[]?.id' 2>/dev/null); do
-      detail="$(gh api "repos/$owner/$repo/rulesets/$id" 2>/dev/null || printf '{}')"
-      if printf '%s' "$detail" | jq -e '
-            .enforcement == "active"
-            and (.conditions.ref_name.include // [] | index("~DEFAULT_BRANCH"))
-            and ([.rules[]?.type] | index("pull_request"))
-          ' >/dev/null 2>&1; then
-        protected=1
-        break
-      fi
-    done
-    if (( protected )); then
-      note "ruleset   default branch requires a pull request"
-    else
-      printf '    WARNING  %s/%s has no active ruleset requiring a PR on its\n' "$owner" "$repo" >&2
-      printf '             default branch. A token that can push at all can push\n' >&2
-      printf '             there directly. Add a ruleset with the pull_request rule.\n' >&2
-    fi
-  elif printf '%s' "$rules" | grep -q "Upgrade to GitHub"; then
-    printf '    WARNING  %s/%s cannot have a ruleset: rulesets on a private\n' "$owner" "$repo" >&2
-    printf '             repo need GitHub Team or Pro, and this plan does not\n' >&2
-    printf '             include them. Nothing will stop the agent pushing to\n' >&2
-    printf '             the default branch. Either upgrade the plan, or treat\n' >&2
-    printf '             this sandbox as trusted with direct push.\n' >&2
-  else
-    note "ruleset   could not check (no access to $owner/$repo, or repo not found)"
-  fi
-fi
+check_ruleset
 
 if (( DRY_RUN )); then
   printf '\n'
@@ -438,42 +325,10 @@ run git clone --quiet "$CLONE_URL" "$SEED" || die "clone failed: $CLONE_URL"
 # window in which the sandbox held the global token.
 
 if (( ! NO_TOKEN )); then
-  printf '\n'
-  step "Staging sandbox-scoped GitHub secret"
-  run sbx secret set --sandbox "$NAME" github --ref "$TOKEN_REF" \
-    || die "could not store the scoped secret; sandbox not created"
+  stage_scoped_secret
 fi
 
 # --- create -----------------------------------------------------------------
-
-# Roll back on failure. The secret is staged before creation deliberately, so
-# a failed create would otherwise leave a live credential scoped to a sandbox
-# that does not exist, and it would silently apply to any later sandbox that
-# reused the name. That is the exact hazard --destroy exists to prevent, so it
-# must not be reachable by simply having creation fail.
-rollback() {
-  printf '\n'
-  step "Creation failed, rolling back"
-
-  if [[ -d "$SEED" ]]; then
-    note "removing seed clone $SEED"
-    rm -rf "$SEED"
-  fi
-
-  # Attempted unconditionally rather than gated on a prior `secret ls`: the
-  # store is written by the daemon, so a read immediately after `secret set`
-  # can still show nothing and would skip the delete, leaving the credential.
-  # Deleting something absent is harmless; the verify below is what reports.
-  if (( ! NO_TOKEN )); then
-    yes | sbx secret rm --sandbox "$NAME" github >/dev/null 2>&1 || true
-    if secret_present; then
-      note "WARNING: scoped secret survived rollback. Remove it with:"
-      note "  sbx secret rm --sandbox $NAME github"
-    else
-      note "no staged secret left behind"
-    fi
-  fi
-}
 
 printf '\n'
 step "Creating sandbox"
@@ -493,85 +348,8 @@ fi
 if (( DRY_RUN )); then exit 0; fi
 
 # --- verify the staged token ------------------------------------------------
-# Run from inside the sandbox deliberately, and note that this does not expose
-# the credential. GH_TOKEN there is a fixed placeholder (gho_sbxprox..., byte
-# for byte identical across sandboxes); the real secret stays on the host and
-# the egress proxy substitutes it. So these calls exercise the token without
-# anything in the sandbox, or in this script, ever holding it. A host-side
-# check would have to `op read` the plaintext into a host process for no gain.
-#
-# These are the exact failures observed in practice. A token minted for the
-# wrong resource owner still clones, because the seed clone above used the
-# host's credentials, and `gh auth status` inside reports a healthy login
-# either way. Without this, the first symptom is a call failing mid-session.
 
-if (( ! NO_TOKEN )); then
-  printf '\n'
-  step "Verifying token access"
-
-  # A commit SHA, not the branch name. These endpoints take {ref} as a single
-  # path segment, so a default branch containing a slash (release/stable) would
-  # split across segments and come back "No commit found for SHA:
-  # release/stable". That 404 is indistinguishable here from a permission
-  # failure, so it would warn about the exact thing it is meant to verify.
-  head_sha="$(git -C "$SEED" rev-parse HEAD 2>/dev/null || printf 'HEAD')"
-
-  # Exit status only; --silent discards the body. Called from `if`, so set -e
-  # does not abort on the failures this exists to detect.
-  token_can() { sbx exec "$NAME" -- gh api "$1" --silent >/dev/null 2>&1; }
-
-  if token_can "repos/$owner/$repo"; then
-    note "repo      $owner/$repo reachable"
-  else
-    printf '\n' >&2
-    printf '    ERROR  the staged token cannot reach %s/%s.\n' "$owner" "$repo" >&2
-    printf '           A fine-grained token has a single resource owner, so one\n' >&2
-    printf '           minted for a different account or organisation will not\n' >&2
-    printf '           reach this repo. The seed clone used your host\n' >&2
-    printf '           credentials, which is why it still succeeded.\n\n' >&2
-    printf '           reference  %s\n' "$TOKEN_REF" >&2
-    printf '           via        %s\n\n' "$TOKEN_REF_SOURCE" >&2
-    printf '           Tear down with: research-sandbox --destroy %s\n' "$NAME" >&2
-    exit 1
-  fi
-
-  # Missing read permissions degrade the sandbox without breaking it, so they
-  # warn rather than abort. Reading CI is the one worth taking seriously: the
-  # agent cannot tell a green pipeline from an unreadable one, so it reports
-  # local test runs as though they were CI.
-  degraded=0
-  if token_can "repos/$owner/$repo/issues?per_page=1"; then
-    note "issues    readable"
-  else
-    note "WARNING: no Issues permission. The agent cannot read or file issues."
-    degraded=1
-  fi
-  # Deliberately not probing check-runs. That endpoint answers
-  # X-Accepted-GitHub-Permissions: checks=read, and `checks` is a GitHub App
-  # permission with no fine-grained token equivalent, so it can never pass here
-  # and a probe for it would report a permanent, unfixable failure. CI is read
-  # through the Actions API instead; see the note below the permission list in
-  # --help.
-  if token_can "repos/$owner/$repo/commits/$head_sha/status"; then
-    note "statuses  readable"
-  else
-    note "WARNING: no Commit statuses permission. Checks reported as a commit"
-    note "         status are invisible to the agent."
-    degraded=1
-  fi
-  if token_can "repos/$owner/$repo/actions/runs?per_page=1"; then
-    note "actions   readable, so CI is visible via the Actions API"
-  else
-    note "WARNING: no Actions permission. Workflow runs and job logs are not"
-    note "         readable, so the agent cannot see CI at all and any green it"
-    note "         reports is a local test run, not the pipeline."
-    degraded=1
-  fi
-
-  if (( degraded )); then
-    note "see research-kit/README.md for the full permission set"
-  fi
-fi
+verify_token_access
 
 printf '\n'
 step "Ready"
