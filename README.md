@@ -12,10 +12,13 @@ stock system with no interpreter to install first.
 | --- | --- |
 | [`bin/brew-upgrade-safe.sh`](bin/brew-upgrade-safe.sh) | `brew upgrade` that holds casks back until a release has soaked upstream |
 | [`bin/research-sandbox.sh`](bin/research-sandbox.sh) | launcher for isolated research sandboxes with open egress and a narrowly scoped GitHub token |
+| [`bin/project-sandbox.sh`](bin/project-sandbox.sh) | launcher for development sandboxes on a real checkout, with the same narrowly scoped token |
 | [`shell/sbx-kit-wrapper.zsh`](shell/sbx-kit-wrapper.zsh) | zsh wrapper making the default `--kit` set apply to `sbx run claude` |
 | [`claude-config-kit/`](claude-config-kit/) | an [sbx](https://docs.docker.com/ai/sandboxes/) mixin kit carrying a Claude Code status line and settings into every sandbox |
 | [`dev-tools-kit/`](dev-tools-kit/) | sbx mixin kit installing Node 24, pnpm, gh and the projects' supply-chain policy |
 | [`research-kit/`](research-kit/) | sbx mixin kit opening full network egress for research and planning sandboxes |
+| [`lib/`](lib/) | shell libraries the launchers source; never executed, never on `PATH` |
+| [`docs/sandbox-github-access.md`](docs/sandbox-github-access.md) | the GitHub credential model both launchers share |
 | [`setup.sh`](setup.sh) | installer: symlinks `bin/`, sources `shell/` |
 | [`uninstall.sh`](uninstall.sh) | reverses `setup.sh` |
 
@@ -86,7 +89,7 @@ keep the rest, re-run `./setup.sh --no-sandbox` instead.
   authenticated GitHub API rate limit (5000/hr rather than 60/hr), which matters
   because it makes one API call per gated package
 - [`sbx`](https://docs.docker.com/ai/sandboxes/), optional: only for the kits,
-  the wrapper and `research-sandbox`
+  the wrapper and the two sandbox launchers
 
 ## The scripts
 
@@ -113,6 +116,52 @@ The cooldown clock measures **packaging**, not the upstream release: it starts
 at the tap commit that published the version. For a cask tracking a delayed
 release channel the version can already be weeks old upstream, which is what
 `NEVER_GATE` is the escape hatch for.
+
+### `research-sandbox` and `project-sandbox`
+
+Two launchers for `sbx` sandboxes, sharing everything about how the agent gets
+at GitHub and differing in what it is allowed to touch.
+
+```bash
+research-sandbox owner/repo     # a throwaway clone, open egress
+research-sandbox                # same, reading owner/repo from the cwd's origin
+
+cd ~/projects/league-service
+project-sandbox                 # bind-mounts this checkout; creates and exits
+project-sandbox                 # a second run attaches
+project-sandbox --worktree fix  # attaches with the agent on worktree-fix
+```
+
+| | `research-sandbox` | `project-sandbox` |
+| --- | --- | --- |
+| Workspace | a throwaway clone on a container volume | the repository root, bind-mounted |
+| Network | unrestricted, via `research-kit` | the default policy |
+| Getting work back | `git fetch sandbox-<name>` | it is already in your checkout |
+| `--destroy` | removes the seed clone too | never removes a directory |
+
+Both stage a **fine-grained GitHub token scoped to that sandbox alone**, so
+neither inherits the global `github` secret, and both verify from inside the
+sandbox afterwards that the token can actually reach the repository. That model
+is written up in full in
+[`docs/sandbox-github-access.md`](docs/sandbox-github-access.md): what the
+token needs, why there is one per repository owner, how it reaches the sandbox
+without ever being held there, and what each verification warning means.
+
+Set one reference per owner, which both commands read:
+
+```zsh
+export SBX_GH_TOKEN_REF_MPORTNER="op://Private/gh-agent-personal/credential"
+```
+
+`project-sandbox` also checks what the checkout is about to hand over. It scans
+for gitignored files that look like credentials (`git status` alone will not
+show you those) and warns on a dirty tree, since `claude --worktree` branches
+from HEAD. It asks about both on create, and on attach only when the answers
+have changed.
+
+`--worktree NAME` is handled by the launcher rather than passed through to
+`claude`, because a worktree it does not know about is one whose `node_modules`
+it cannot isolate from the host's.
 
 ### `claude-config-kit`
 

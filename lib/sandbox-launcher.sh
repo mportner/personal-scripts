@@ -6,15 +6,17 @@
 # Copyright (c) 2026 Michael Portner
 #
 # Sandbox and GitHub machinery shared by every sbx launcher in bin/: repo
-# argument parsing, owner-scoped token reference resolution, the op
-# preflight, sandbox-scoped secret staging, its rollback, the ruleset check,
-# and post-create token verification.
+# argument parsing, deriving the repo from a checkout's origin, owner-scoped
+# token reference resolution, the op preflight, sandbox-scoped secret staging
+# and removal, its rollback, the ruleset check, and post-create token
+# verification.
 #
 # These functions operate on globals their caller sets (REPO_ARG, NAME,
 # SEED, TOKEN_REF, TOKEN_REF_EXPLICIT, TOKEN_REF_SOURCE, NO_TOKEN, DRY_RUN,
-# ...) rather than taking parameters, matching the flat, global-variable style
-# the rest of this repo already uses for these scripts. They also call the
-# caller's own run(), so staging still honours --dry-run.
+# VERIFY_MODE, UNREACHABLE_ACTION, ...) rather than taking parameters, matching
+# the flat, global-variable style the rest of this repo already uses for these
+# scripts. They also call the caller's own run(), so staging still honours
+# --dry-run.
 #
 # This file defines functions only. It must be SOURCED, not executed, and it
 # depends on lib/output.sh (die, note, step) being sourced first; see that
@@ -54,14 +56,79 @@ parse_repo_arg() {
   [[ -n "$owner" && -n "$repo" ]] || die "cannot parse owner/repo from: $REPO_ARG"
 }
 
+# Prints the root of the checkout containing DIR (default: the current
+# directory), or fails when there is no repository there.
+#
+# Derived from --git-common-dir rather than --show-toplevel, which reports the
+# linked worktree when run from inside one. The worktree is the wrong thing to
+# hand a sandbox: its .git is a file pointing back into the main checkout's
+# object store, so mounting the worktree alone gives the container a repository
+# with no objects in it. The common directory is the main checkout's .git in
+# both cases, so its parent is the root we want either way.
+#
+# Made absolute by hand rather than with --path-format=absolute, which git only
+# gained in 2.31: --git-common-dir answers a bare ".git" when the cwd is the top
+# of the tree, and dirname of that is "." rather than the repository.
+git_repo_root() {
+  local dir common
+  dir="${1:-$PWD}"
+  common="$(git -C "$dir" rev-parse --git-common-dir 2>/dev/null)" || return 1
+  [[ -n "$common" ]] || return 1
+  case "$common" in
+    /*) ;;
+    *)  common="$(cd -- "$dir" && pwd -P)/$common" ;;
+  esac
+  (cd -- "$(dirname -- "$common")" && pwd -P) 2>/dev/null || return 1
+}
+
+# Classifies the origin remote of the checkout at $1, so callers can derive the
+# repo from the working directory instead of being told it. Sets ORIGIN_URL and
+# ORIGIN_KIND, the latter to one of:
+#
+#   https       a github.com HTTPS remote; ORIGIN_URL feeds parse_repo_arg
+#   ssh         a github.com SSH remote, normalised to the scp-like form so
+#               parse_repo_arg takes it. The owner parses fine, but the sandbox
+#               authenticates by the proxy substituting a token into HTTPS
+#               traffic and has no key, so callers warn about the mismatch
+#   non-github  some other forge. There is no GitHub token that fits, so this
+#               is a preflight failure rather than a warning
+#   none        no origin at all, so there is nothing to derive an owner from
+#
+# ssh:// is folded into the scp-like spelling rather than given parse_repo_arg a
+# third case: the two are the same remote written two ways, and every caller
+# treats them identically.
+# ORIGIN_KIND is read by the sourcing launcher, which shellcheck cannot see
+# when it lints this file on its own.
+# shellcheck disable=SC2034
+classify_origin() {
+  ORIGIN_URL="$(git -C "$1" remote get-url origin 2>/dev/null || printf '')"
+  case "$ORIGIN_URL" in
+    '')                     ORIGIN_KIND=none ;;
+    https://github.com/*)   ORIGIN_KIND=https ;;
+    git@github.com:*)       ORIGIN_KIND=ssh ;;
+    ssh://git@github.com/*)
+      ORIGIN_KIND=ssh
+      ORIGIN_URL="git@github.com:${ORIGIN_URL#ssh://git@github.com/}"
+      ;;
+    *)                      ORIGIN_KIND=non-github ;;
+  esac
+}
+
 # A fine-grained token has exactly one resource owner, so a personal account
 # and an organisation need separate tokens. Sets owner_key, and TOKEN_REF plus
 # TOKEN_REF_SOURCE when one is found.
 #
 # Precedence: --token-ref (TOKEN_REF_EXPLICIT, set by the caller's option
-# parsing), then RESEARCH_GH_TOKEN_REF_<OWNER>, then RESEARCH_GH_TOKEN_REF. The
-# owner is upper-cased with anything outside A-Z0-9 folded to _, so mportner
-# becomes RESEARCH_GH_TOKEN_REF_MPORTNER.
+# parsing), then SBX_GH_TOKEN_REF_<OWNER>, then SBX_GH_TOKEN_REF. The owner is
+# upper-cased with anything outside A-Z0-9 folded to _, so mportner becomes
+# SBX_GH_TOKEN_REF_MPORTNER.
+#
+# Named for the sandbox rather than for research: every launcher in bin/ reads
+# the same variables, so one token reference per owner covers both. There is no
+# compatibility shim for the old RESEARCH_ spelling on purpose. A silent
+# fallback is how you end up with two half-configured sets of variables and no
+# idea which one is live, and the entire user population is one person editing
+# two lines of a shell rc file.
 resolve_token_ref() {
   local owner_var
   owner_key="$(printf '%s' "$owner" | LC_ALL=C tr '[:lower:]' '[:upper:]' \
@@ -69,13 +136,13 @@ resolve_token_ref() {
   if (( TOKEN_REF_EXPLICIT )); then
     TOKEN_REF_SOURCE="--token-ref"
   else
-    owner_var="RESEARCH_GH_TOKEN_REF_$owner_key"
+    owner_var="SBX_GH_TOKEN_REF_$owner_key"
     if [[ -n "${!owner_var:-}" ]]; then
       TOKEN_REF="${!owner_var}"
       TOKEN_REF_SOURCE="$owner_var"
-    elif [[ -n "${RESEARCH_GH_TOKEN_REF:-}" ]]; then
-      TOKEN_REF="$RESEARCH_GH_TOKEN_REF"
-      TOKEN_REF_SOURCE="RESEARCH_GH_TOKEN_REF"
+    elif [[ -n "${SBX_GH_TOKEN_REF:-}" ]]; then
+      TOKEN_REF="$SBX_GH_TOKEN_REF"
+      TOKEN_REF_SOURCE="SBX_GH_TOKEN_REF"
     fi
   fi
 }
@@ -94,8 +161,49 @@ settings. Or pass --no-token to create a sandbox with no GitHub credential."
 # and plus signs, which are ERE metacharacters. "a+b" as a pattern means "one
 # or more a, then b" and would not match the literal scope "a+b", so the
 # post-delete check would report a credential gone while it was still stored.
+#
+# The type and name columns are matched as well as the scope. A sandbox may
+# hold secrets for other services, and callers here all mean the github one
+# specifically: without this, an unrelated scoped secret makes the post-delete
+# check report a github credential that is not there, and makes the re-stage
+# check skip staging one that is missing.
 secret_present() {
-  sbx secret ls 2>/dev/null | awk -v n="$NAME" 'NR > 1 && $1 == n { found = 1 } END { exit !found }'
+  sbx secret ls 2>/dev/null | awk -v n="$NAME" 'NR > 1 && $1 == n && $2 == "service" && $3 == "github" { found = 1 } END { exit !found }'
+}
+
+# The store's global row, which is the credential a sandbox falls back to when
+# nothing is scoped to it. Same exact-string compare as secret_present, for the
+# same reason; the scope column reads "(global)" literally.
+global_secret_present() {
+  sbx secret ls 2>/dev/null | awk 'NR > 1 && $1 == "(global)" && $2 == "service" && $3 == "github" { found = 1 } END { exit !found }'
+}
+
+# Removes the sandbox-scoped github secret and reports whether it survived.
+#
+# `yes |` feeds the confirmation prompt, but the pipeline exits non-zero even
+# when the delete succeeds, so its status says nothing. The store is read
+# afterwards instead: this is the step that has to be trustworthy, since a
+# leftover token would silently apply to a later sandbox that reused the name.
+#
+# Attempted unconditionally rather than gated on a prior `secret ls`: the store
+# is written by the daemon, so a read immediately after `secret set` can still
+# show nothing and would skip the delete, leaving the credential. Deleting
+# something absent is harmless; the check afterwards is what reports.
+#
+# Not routed through the caller's run(): the delete has to be attempted and its
+# result read back, which run() cannot express, so --dry-run is handled here.
+remove_scoped_secret() {
+  if (( DRY_RUN )); then
+    printf '    would run: sbx secret rm --sandbox %s github\n' "$NAME"
+    return 0
+  fi
+  yes | sbx secret rm --sandbox "$NAME" github >/dev/null 2>&1 || true
+  if secret_present; then
+    note "WARNING: scoped secret still present. Remove it with:"
+    note "  sbx secret rm --sandbox $NAME github"
+  else
+    note "no scoped secret left behind"
+  fi
 }
 
 # Calls the caller's own run(), so this still honours --dry-run.
@@ -115,23 +223,17 @@ rollback() {
   printf '\n'
   step "Creation failed, rolling back"
 
-  if [[ -d "$SEED" ]]; then
+  # SEED is only set by a launcher that makes a seed clone. A launcher that
+  # bind-mounts the user's own checkout leaves it empty and nothing here
+  # removes a directory, which is the point: this path must never be able to
+  # delete a real working tree.
+  if [[ -n "${SEED:-}" && -d "$SEED" ]]; then
     note "removing seed clone $SEED"
     rm -rf "$SEED"
   fi
 
-  # Attempted unconditionally rather than gated on a prior `secret ls`: the
-  # store is written by the daemon, so a read immediately after `secret set`
-  # can still show nothing and would skip the delete, leaving the credential.
-  # Deleting something absent is harmless; the verify below is what reports.
   if (( ! NO_TOKEN )); then
-    yes | sbx secret rm --sandbox "$NAME" github >/dev/null 2>&1 || true
-    if secret_present; then
-      note "WARNING: scoped secret survived rollback. Remove it with:"
-      note "  sbx secret rm --sandbox $NAME github"
-    else
-      note "no staged secret left behind"
-    fi
+    remove_scoped_secret
   fi
 }
 
@@ -194,9 +296,32 @@ check_ruleset() {
 # check would have to `op read` the plaintext into a host process for no gain.
 #
 # These are the exact failures observed in practice. A token minted for the
-# wrong resource owner still clones, because the seed clone above used the
-# host's credentials, and `gh auth status` inside reports a healthy login
-# either way. Without this, the first symptom is a call failing mid-session.
+# wrong resource owner still clones, because the clone above used the host's
+# credentials, and `gh auth status` inside reports a healthy login either way.
+# Without this, the first symptom is a call failing mid-session.
+#
+# Two globals shape it, both defaulting to what a launcher wants on create:
+#
+#   VERIFY_MODE         full       reachability plus every read permission
+#                       reachable  reachability alone. What an attach wants:
+#                                  revocation and rescoping both surface on the
+#                                  first probe, while the permission set only
+#                                  moves when the token itself is edited, so
+#                                  re-running the other three every attach
+#                                  spends round trips to reprint last time's
+#                                  answer. --verify forces full.
+#
+#   UNREACHABLE_ACTION  abort      print the fix and exit. Right when the
+#                                  sandbox exists only for this repo.
+#                       unstage    remove the scoped secret and carry on. Right
+#                                  when the sandbox holds the user's own
+#                                  checkout: tearing that down over a token
+#                                  problem is the more destructive answer, and
+#                                  a credential staged for a repo it cannot
+#                                  reach is the only part needing undone.
+#
+# VERIFY_GIT_DIR is the checkout HEAD is read from, so the caller decides
+# whether that is a seed clone or the mounted working tree.
 verify_token_access() {
   (( NO_TOKEN )) && return 0
 
@@ -210,7 +335,7 @@ verify_token_access() {
   # split across segments and come back "No commit found for SHA:
   # release/stable". That 404 is indistinguishable here from a permission
   # failure, so it would warn about the exact thing it is meant to verify.
-  head_sha="$(git -C "$SEED" rev-parse HEAD 2>/dev/null || printf 'HEAD')"
+  head_sha="$(git -C "${VERIFY_GIT_DIR:-.}" rev-parse HEAD 2>/dev/null || printf 'HEAD')"
 
   # Exit status only; --silent discards the body. Called from `if`, so set -e
   # does not abort on the failures this exists to detect.
@@ -223,13 +348,27 @@ verify_token_access() {
     printf '    ERROR  the staged token cannot reach %s/%s.\n' "$owner" "$repo" >&2
     printf '           A fine-grained token has a single resource owner, so one\n' >&2
     printf '           minted for a different account or organisation will not\n' >&2
-    printf '           reach this repo. The seed clone used your host\n' >&2
-    printf '           credentials, which is why it still succeeded.\n\n' >&2
+    printf '           reach this repo. Nor will one whose repository list does\n' >&2
+    printf '           not include it. Nothing before this point exercised the\n' >&2
+    printf '           token: cloning and the ruleset check both ran on the host\n' >&2
+    printf '           with your own credentials, which is why they succeeded.\n\n' >&2
     printf '           reference  %s\n' "$TOKEN_REF" >&2
     printf '           via        %s\n\n' "$TOKEN_REF_SOURCE" >&2
-    printf '           Tear down with: research-sandbox --destroy %s\n' "$NAME" >&2
+
+    if [[ "${UNREACHABLE_ACTION:-abort}" == unstage ]]; then
+      printf '           Grant the token access to %s/%s, then re-run to stage\n' "$owner" "$repo" >&2
+      printf '           it again. The sandbox is left running; only the secret\n' >&2
+      printf '           is being removed, since one that cannot reach the repo\n' >&2
+      printf '           is no use and must not linger under this name.\n\n' >&2
+      remove_scoped_secret
+      return 1
+    fi
+
+    printf '           Tear down with: %s --destroy %s\n' "$PROG" "$NAME" >&2
     exit 1
   fi
+
+  [[ "${VERIFY_MODE:-full}" == full ]] || return 0
 
   # Missing read permissions degrade the sandbox without breaking it, so they
   # warn rather than abort. Reading CI is the one worth taking seriously: the
@@ -265,6 +404,6 @@ verify_token_access() {
   fi
 
   if (( degraded )); then
-    note "see research-kit/README.md for the full permission set"
+    note "see docs/sandbox-github-access.md for the full permission set"
   fi
 }

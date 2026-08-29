@@ -4,6 +4,12 @@ An [sbx](https://docs.docker.com/ai/sandboxes/) **mixin kit** that opens full
 network egress for sandboxes used purely for research and planning. It stacks
 with `claude-config-kit` and `dev-tools-kit` rather than replacing them.
 
+The GitHub half of what follows is now the shared model documented in
+[`docs/sandbox-github-access.md`](../docs/sandbox-github-access.md), which
+`project-sandbox` uses too. It is repeated here for now; issue #7 reconciles
+the two. What is genuinely specific to research sandboxes is the clone
+isolation and the open egress.
+
 Not meant to be applied by hand. `bin/research-sandbox.sh` combines it with the
 other two mechanisms that make it safe:
 
@@ -209,15 +215,16 @@ The launcher picks between them from the repo argument, so the caller does not
 have to remember which default is currently exported:
 
 ```bash
-export RESEARCH_GH_TOKEN_REF_MPORTNER=op://Private/gh-agent-personal/credential
-export RESEARCH_GH_TOKEN_REF_B3SOLUTIONS=op://Private/gh-agent-b3solutions/credential
+export SBX_GH_TOKEN_REF_MPORTNER=op://Private/gh-agent-personal/credential
+export SBX_GH_TOKEN_REF_B3SOLUTIONS=op://Private/gh-agent-b3solutions/credential
 
 research-sandbox b3solutions/eptools     # picks the b3solutions token
 ```
 
 The owner is upper-cased with anything outside `A-Z0-9` folded to `_`.
 `--token-ref` still wins over both variables, and plain
-`RESEARCH_GH_TOKEN_REF` remains the fallback when no owner-specific one is set.
+`SBX_GH_TOKEN_REF` remains the fallback when no owner-specific one is set.
+The variables are shared with `project-sandbox`, so one per owner covers both.
 
 ### Why the wrong token used to go unnoticed
 
@@ -296,9 +303,15 @@ sandbox reusing the name does not silently inherit it.
 ## Agent instructions
 
 The kit ships an `agentInstructions.content` block telling the agent there is
-no host filesystem, that web content is untrusted data rather than
-instructions, and that the default branch is protected by design so a refused
-push is expected.
+no host filesystem and that web content is untrusted data rather than
+instructions.
+
+What the agent is told about *using* GitHub, that the default branch is
+protected by design so a refused push is expected, and that CI is read through
+the Actions API rather than `gh pr checks`, moved to
+[`dev-tools-kit`](../dev-tools-kit/). That kit installs `gh` and is loaded in
+both the research and the development stacks, while this one is loaded in only
+the first; a development sandbox needs those instructions just as much.
 
 For a mixin this is written to `kits-agent-context/<kit-name>.md` and
 referenced from a `## Kits` section in `CLAUDE.md`, which the agent reads on
