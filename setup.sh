@@ -13,7 +13,9 @@
 #   shell/  fragments that define functions or aliases. These cannot be run as
 #           commands at all, so they get a "source" line in the shell rc file
 #           instead. Executing one would define its functions in a subprocess
-#           that immediately exits, throwing them away.
+#           that immediately exits, throwing them away. Currently empty: the
+#           one fragment that used to live here was the sbx kit wrapper, which
+#           bin/project-sandbox.sh replaced.
 #
 # Safe to re-run: it converges both the link directory and the managed rc block
 # on the current contents of bin/ and shell/, and never touches anything it did
@@ -48,7 +50,8 @@ becomes the command brew-upgrade-safe.
 
 Adds a managed block to your shell rc file that puts that directory on PATH and
 sources every fragment in shell/. Fragments define shell functions, so they must
-be sourced rather than executed and are never symlinked onto PATH.
+be sourced rather than executed and are never symlinked onto PATH. There are
+none at present, so the block is the PATH stanza alone.
 
 Re-running converges on the current contents of both directories: new scripts
 are linked, moved ones are repointed, links to scripts that no longer exist are
@@ -128,11 +131,15 @@ command_name() {
 # and the real question is not "is this a sandbox script" but "does this need
 # a tool the machine may not have".
 #
-# Only the header is read, so the same words appearing in the body of a script
-# that documents this convention do not turn into a requirement.
-requires() {
-  awk 'NR > 25 { exit }
-       /^# requires: / { sub(/^# requires:[ \t]*/, ""); print; exit }' "$1"
+# Only the header is searched, so the same words further down a script that
+# documents this convention do not turn into a requirement. The header ends at
+# the first line that is neither a comment nor blank, which beats a line count:
+# a count generous enough to be safe today is one a longer preamble outgrows
+# silently, dropping the requirement with no signal that it did.
+required_tool() {
+  awk '/^# requires: / { sub(/^# requires:[ \t]*/, ""); print; exit }
+       /^#/ || /^[[:space:]]*$/ { next }
+       { exit }' "$1"
 }
 
 in_list() {
@@ -217,6 +224,7 @@ for src in "$BIN_SRC"/*; do
 
   if [[ ! -x "$src" ]]; then
     printf '    skip   %-24s not executable (chmod +x to install it)\n' "$base"
+    skipped_names+=("$(command_name "$src")")
     skipped=$(( skipped + 1 ))
     continue
   fi
@@ -232,7 +240,7 @@ for src in "$BIN_SRC"/*; do
   # opt-out for the sbx ones; a tool that is simply missing only warns, because
   # it can be installed after this runs and a link that silently never appeared
   # is harder to diagnose than a command that says what it wants.
-  req="$(requires "$src")"
+  req="$(required_tool "$src")"
   if [[ -n "$req" ]]; then
     if (( NO_SANDBOX )) && [[ "$req" == sbx ]]; then
       printf '    skip   %-24s needs sbx, --no-sandbox\n' "$name"
@@ -241,11 +249,9 @@ for src in "$BIN_SRC"/*; do
       continue
     fi
     if ! command -v "$req" >/dev/null 2>&1; then
-      if [[ "$req" == sbx ]]; then
-        printf '    NOTE   %-24s needs sbx, not installed (--no-sandbox leaves it out)\n' "$name" >&2
-      else
-        printf '    NOTE   %-24s needs %s, not installed\n' "$name" "$req" >&2
-      fi
+      hint=''
+      [[ "$req" == sbx ]] && hint=' (--no-sandbox leaves it out)'
+      printf '    NOTE   %-24s needs %s, not installed%s\n' "$name" "$req" "$hint" >&2
     fi
   fi
 

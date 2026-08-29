@@ -109,10 +109,10 @@ mechanisms above, and they are, but neither would be acceptable on its own.
 
 Unrestricted egress means the sandbox reads arbitrary web pages, which makes it
 the single most likely place for a prompt injection to land. Clone isolation is
-what bounds the consequence: the agent's writes go to a container volume, the
-one host path in reach is read-only and contains only a throwaway clone, and
-the credential it holds is a placeholder the proxy substitutes rather than a
-token it could exfiltrate.
+what bounds the consequence: the agent's writes go to a container volume, and
+the one host path in reach is read-only and holds nothing but a throwaway
+clone. The credential is bounded separately, by the mechanism in
+[`docs/sandbox-github-access.md`](../docs/sandbox-github-access.md).
 
 Take either away and the pairing stops working. That is why
 `bin/project-sandbox.sh` does **not** load this kit: it bind-mounts a real

@@ -34,7 +34,7 @@ cd ~/personal-scripts
 - **`bin/`** symlinks each executable into `~/.local/bin` with a known script
   extension (`.sh`, `.bash`, `.zsh`, `.py`, `.rb`, `.pl`) stripped, so
   `brew-upgrade-safe.sh` becomes the command `brew-upgrade-safe`.
-- **`~/.zshrc`** gains a marked block putting that directory on `PATH`, plus a
+- **`~/.zshrc`** gains a marked block putting `~/.local/bin` on `PATH`, plus a
   `source` line for every fragment in `shell/`. Fragments define shell
   functions, so they must be sourced rather than executed, which is why they
   are never symlinked onto `PATH`. There are none at present, so the block is
