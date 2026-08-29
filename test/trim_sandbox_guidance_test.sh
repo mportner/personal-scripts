@@ -11,7 +11,10 @@
 # The fixture beside this file is a condensed copy of the real generated file
 # (sbx 0.39.0): same H1, same generated project-guidance sections, the same
 # `## Environment Persistence` anchor where sbx's own content starts, and the
-# same sentinel-wrapped `## Kits` section at the end. Sourced by test/run.sh.
+# same sentinel-wrapped `## Kits` section at the end. It deliberately carries no
+# file header: the script keys off its first line being `# Project Guidance`, so
+# a header would make the fixture a file the script is meant to refuse rather
+# than the one it is meant to rewrite. Sourced by test/run.sh.
 
 SCRIPT="$REPO_DIR/claude-config-kit/files/home/.claude-config-kit/trim-sandbox-guidance.sh"
 FIXTURE="$TEST_DIR/fixtures/generated-guidance.md"
