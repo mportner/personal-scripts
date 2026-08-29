@@ -437,7 +437,7 @@ verify_token_access() {
 # file on its own.
 # shellcheck disable=SC2034
 resolve_subscription_type() {
-  local raw origin host_config
+  local raw origin host_config cleaned
   SUBSCRIPTION_TYPE=""
   SUBSCRIPTION_TYPE_SOURCE=""
 
@@ -468,7 +468,13 @@ resolve_subscription_type() {
   # not the test it looks like: in a UTF-8 locale the a-z range collates
   # case-insensitively, so the glob accepts MAX and every other upper-case
   # spelling. The C locale makes the range the 26 bytes it appears to be.
-  if [[ -z "$raw" || -n "$(printf '%s' "$raw" | LC_ALL=C tr -d 'a-z0-9_')" ]]; then
+  #
+  # Written as its own command so a `tr` that cannot run refuses the value
+  # rather than accepting it: an unreachable filter returns the empty string,
+  # which is what a valid plan name returns too. Same shape as the check in
+  # claude-config-kit's stamp-subscription-type.sh, for the same reason.
+  if ! cleaned="$(printf '%s' "$raw" | LC_ALL=C tr -d 'a-z0-9_')" \
+     || [[ -z "$raw" || -n "$cleaned" ]]; then
     note "plan      ignoring '$raw' from $origin, that is not a plan name"
     return 0
   fi

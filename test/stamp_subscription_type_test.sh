@@ -105,15 +105,38 @@ assert_contains "$(cat "$home/stderr")" 'claude-config' "says why it refused"
 
 # --- without jq it does nothing rather than guessing --------------------------
 
+# A PATH holding every command the script runs BEFORE the jq check, and nothing
+# else. Leaving one out would make this case "jq and that command are missing",
+# which passes for the wrong reason: the plan-name filter would not run either,
+# and the test would no longer isolate what it is named for.
+make_stub_path() {
+  # $@ the commands to make reachable
+  local stub tool path
+  stub="$(new_scratch)/bin"
+  mkdir -p "$stub"
+  for tool in "$@"; do
+    path="$(command -v "$tool")" && ln -s "$path" "$stub/$tool"
+  done
+  printf '%s' "$stub"
+}
+
 home="$(make_home)"
-stub="$(new_scratch)/bin"
-mkdir -p "$stub"
-for t in sh mv rm chmod cat; do
-  p="$(command -v "$t")" && ln -s "$p" "$stub/$t"
-done
+stub="$(make_stub_path sh tr mv rm chmod cat)"
 ( PATH="$stub" HOME="$home" SBX_CLAUDE_SUBSCRIPTION_TYPE=max sh "$SCRIPT" >/dev/null 2>&1 )
 assert_equals 0 $? "exits 0 when jq is not installed"
 assert_equals "$CRED" "$(cat "$home/.claude/.credentials.json")" "leaves the file alone without jq"
+
+# --- a filter it cannot run refuses the value rather than passing it ---------
+
+# tr held back, jq reachable. An unreachable filter returns the empty string,
+# which is what a valid plan name returns too, so the check has to notice the
+# filter itself failed rather than read that as "nothing to object to".
+home="$(make_home)"
+stub="$(make_stub_path sh jq mv rm chmod cat)"
+( PATH="$stub" HOME="$home" SBX_CLAUDE_SUBSCRIPTION_TYPE=max sh "$SCRIPT" >/dev/null 2>&1 )
+assert_equals 0 $? "exits 0 when the filter cannot run"
+assert_equals "$CRED" "$(cat "$home/.claude/.credentials.json")" \
+  "stamps nothing when the filter cannot run"
 
 # An upper-case spelling is refused too. A [!a-z0-9_] glob would accept it: in a
 # UTF-8 locale that range collates case-insensitively.

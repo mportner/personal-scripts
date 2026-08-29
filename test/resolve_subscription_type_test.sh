@@ -89,3 +89,16 @@ assert_equals '|' "$(resolve "$home" 'MAX')" "refuses an explicit type that is n
 
 home="$(make_host_home 'claude_Max Plan')"
 assert_equals '|' "$(resolve "$home")" "refuses a malformed type from the host account"
+
+# --- a filter it cannot run refuses the value rather than passing it ---------
+
+# jq reachable, tr held back. An unreachable filter returns the empty string,
+# which is what a valid plan name returns too, so the check has to notice the
+# filter itself failed rather than read that as "nothing to object to".
+stub="$(new_scratch)/bin"
+mkdir -p "$stub"
+for tool in jq printf; do
+  tool_path="$(command -v "$tool")" && ln -s "$tool_path" "$stub/$tool"
+done
+home="$(make_host_home claude_max)"
+assert_equals '|' "$(PATH="$stub" resolve "$home")" "refuses a plan the filter could not check"

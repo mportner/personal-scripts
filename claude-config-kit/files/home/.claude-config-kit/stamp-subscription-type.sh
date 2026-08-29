@@ -57,7 +57,15 @@ target="${HOME:-}/.claude/.credentials.json"
 # the test it looks like: in a UTF-8 locale the a-z range collates
 # case-insensitively, so the glob accepts MAX and every other upper-case
 # spelling. The C locale makes the range the 26 bytes it appears to be.
-if [ -n "$(printf '%s' "$type" | LC_ALL=C tr -d 'a-z0-9_')" ]; then
+#
+# The filter running at all is checked separately, so that a `tr` this cannot
+# reach refuses the value rather than accepting it. An unreachable filter would
+# otherwise return the empty string, which is exactly what a valid plan name
+# returns, and the check would pass everything it was written to stop.
+if ! cleaned="$(printf '%s' "$type" | LC_ALL=C tr -d 'a-z0-9_')"; then
+  note "could not check SBX_CLAUDE_SUBSCRIPTION_TYPE, leaving $target alone"
+  exit 0
+elif [ -n "$cleaned" ]; then
   note "ignoring SBX_CLAUDE_SUBSCRIPTION_TYPE, '$type' is not a plan name"
   exit 0
 fi
