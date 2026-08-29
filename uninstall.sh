@@ -7,8 +7,8 @@
 # Copyright (c) 2026 Michael Portner
 #
 # Reverses setup.sh: removes the symlinks it created and, on confirmation, the
-# managed block it added to the shell rc file (the PATH entry and the source
-# lines for shell/ fragments).
+# managed block it added to the shell rc file (the PATH entry, and a source
+# line per shell/ fragment when there are any).
 #
 # Only symlinks resolving into this repo are removed. Regular files and links
 # pointing anywhere else are left alone, so this cannot damage entries another

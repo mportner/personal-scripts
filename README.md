@@ -13,13 +13,12 @@ stock system with no interpreter to install first.
 | [`bin/brew-upgrade-safe.sh`](bin/brew-upgrade-safe.sh) | `brew upgrade` that holds casks back until a release has soaked upstream |
 | [`bin/research-sandbox.sh`](bin/research-sandbox.sh) | launcher for isolated research sandboxes with open egress and a narrowly scoped GitHub token |
 | [`bin/project-sandbox.sh`](bin/project-sandbox.sh) | launcher for development sandboxes on a real checkout, with the same narrowly scoped token |
-| [`shell/sbx-kit-wrapper.zsh`](shell/sbx-kit-wrapper.zsh) | zsh wrapper making the default `--kit` set apply to `sbx run claude` |
 | [`claude-config-kit/`](claude-config-kit/) | an [sbx](https://docs.docker.com/ai/sandboxes/) mixin kit carrying a Claude Code status line and settings into every sandbox |
 | [`dev-tools-kit/`](dev-tools-kit/) | sbx mixin kit installing Node 24, pnpm, gh and the projects' supply-chain policy |
 | [`research-kit/`](research-kit/) | sbx mixin kit opening full network egress for research and planning sandboxes |
 | [`lib/`](lib/) | shell libraries the launchers source; never executed, never on `PATH` |
 | [`docs/sandbox-github-access.md`](docs/sandbox-github-access.md) | the GitHub credential model both launchers share |
-| [`setup.sh`](setup.sh) | installer: symlinks `bin/`, sources `shell/` |
+| [`setup.sh`](setup.sh) | installer: symlinks `bin/` onto `PATH`, manages a block in `~/.zshrc` |
 | [`uninstall.sh`](uninstall.sh) | reverses `setup.sh` |
 
 ## Install
@@ -35,10 +34,11 @@ cd ~/personal-scripts
 - **`bin/`** symlinks each executable into `~/.local/bin` with a known script
   extension (`.sh`, `.bash`, `.zsh`, `.py`, `.rb`, `.pl`) stripped, so
   `brew-upgrade-safe.sh` becomes the command `brew-upgrade-safe`.
-- **`shell/`** adds a marked block to `~/.zshrc` that puts that directory on
-  `PATH` and `source`s every fragment. Fragments define shell functions, so they
-  must be sourced rather than executed, which is why they are never symlinked
-  onto `PATH`.
+- **`~/.zshrc`** gains a marked block putting `~/.local/bin` on `PATH`, plus a
+  `source` line for every fragment in `shell/`. Fragments define shell
+  functions, so they must be sourced rather than executed, which is why they
+  are never symlinked onto `PATH`. There are none at present, so the block is
+  the `PATH` stanza alone.
 
 It prompts before touching `~/.zshrc` and backs the file up first. If it finds
 one of its marker comments without the matching partner (a half-removed block,
@@ -57,18 +57,27 @@ disturb entries another installer owns in `~/.local/bin`.
 
 Set `PERSONAL_SCRIPTS_BIN` to link somewhere other than `~/.local/bin`.
 
-### Without the sandbox wrapper
+### On a machine without `sbx`
 
-On a machine with no [`sbx`](https://docs.docker.com/ai/sandboxes/), skip the
-wrapper and install everything else:
+Both sandbox launchers declare `# requires: sbx` in their header. `--no-sandbox`
+leaves out every `bin/` script carrying that marker and installs the rest:
 
 ```bash
 ./setup.sh --no-sandbox
 ```
 
 Because re-running converges, this doubles as the way to change your mind
-later. Adding the flag on a machine that already has the wrapper removes its
-`source` line; dropping the flag puts it back. Neither touches anything else.
+later. Adding the flag on a machine that already has them prunes their links;
+dropping it links them back. Neither touches anything else.
+
+Without the flag, a missing [`sbx`](https://docs.docker.com/ai/sandboxes/) is
+only a warning: the scripts are linked anyway, and named alongside the flag
+that would have left them out. It can be installed afterwards, and a command
+that says what it wants is easier to diagnose than a link that silently never
+appeared.
+
+The marker lives in the script rather than in a list inside `setup.sh`, so it
+cannot drift when a script is added or renamed.
 
 ## Uninstall
 
@@ -77,19 +86,19 @@ later. Adding the flag on a machine that already has the wrapper removes its
 ```
 
 All or nothing: it removes every symlink pointing into this repo and offers to
-strip the managed block from `~/.zshrc`. To remove just the sandbox wrapper and
-keep the rest, re-run `./setup.sh --no-sandbox` instead.
+strip the managed block from `~/.zshrc`. To remove just the sandbox launchers
+and keep the rest, re-run `./setup.sh --no-sandbox` instead.
 
 ## Requirements
 
 - macOS with [Homebrew](https://brew.sh)
-- `zsh` (the macOS default) for the `shell/` fragments
+- `zsh` (the macOS default): `setup.sh` manages a block in its rc file
 - `jq`, required by `brew-upgrade-safe` and the status line: `brew install jq`
 - [`gh`](https://cli.github.com), optional: `brew-upgrade-safe` uses it for an
   authenticated GitHub API rate limit (5000/hr rather than 60/hr), which matters
   because it makes one API call per gated package
-- [`sbx`](https://docs.docker.com/ai/sandboxes/), optional: only for the kits,
-  the wrapper and the two sandbox launchers
+- [`sbx`](https://docs.docker.com/ai/sandboxes/), optional: only for the kits
+  and the two sandbox launchers
 
 ## The scripts
 
@@ -199,30 +208,10 @@ over the bind mount. See its [README](dev-tools-kit/README.md).
 Adds about 30s to sandbox creation, most of it Playwright's system libraries;
 `-e SBX_DEV_TOOLS_PLAYWRIGHT=0` skips those and brings it down to about 15s.
 
-Applied to every sandbox the wrapper creates, and by `research-sandbox` with
-Playwright skipped. Research sandboxes get it mainly for the supply-chain
-policy: they are the ones with unrestricted egress, so they are the last place
-that should be installing packages with no release-age window.
-
-### `sbx-kit-wrapper.zsh`
-
-`sbx` has no config file or environment variable for a default kit; `--kit` is a
-per-invocation flag. This wrapper supplies `claude-config-kit` and
-`dev-tools-kit`, so `sbx run claude` behaves as if they were the default.
-Anything that is not `run`/`create`, and any invocation that already passes
-`--kit`, is passed straight through untouched.
-
-Kit paths are resolved from the fragment's own location, so the repo works
-wherever you clone it. Override with `SBX_DEFAULT_KITS` before sourcing:
-
-```zsh
-SBX_DEFAULT_KITS=(~/personal-scripts/claude-config-kit)   # skip the toolchain kit
-```
-
-If a kit directory is missing it warns and continues without that one, rather
-than silently dropping the flag.
-
-This is the one piece `./setup.sh --no-sandbox` leaves out.
+Applied by both launchers: `project-sandbox` with Playwright, `research-sandbox`
+with it skipped. Research sandboxes get it mainly for the supply-chain policy:
+they are the ones with unrestricted egress, so they are the last place that
+should be installing packages with no release-age window.
 
 ## License
 

@@ -6,6 +6,8 @@
 #
 # Copyright (c) 2026 Michael Portner
 #
+# requires: sbx
+#
 # Creates an sbx sandbox for development on a real checkout: the repository
 # root bind-mounted, the default network policy, and a GitHub token scoped to
 # this sandbox alone.

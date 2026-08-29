@@ -13,7 +13,9 @@
 #   shell/  fragments that define functions or aliases. These cannot be run as
 #           commands at all, so they get a "source" line in the shell rc file
 #           instead. Executing one would define its functions in a subprocess
-#           that immediately exits, throwing them away.
+#           that immediately exits, throwing them away. Currently empty: the
+#           one fragment that used to live here was the sbx kit wrapper, which
+#           bin/project-sandbox.sh replaced.
 #
 # Safe to re-run: it converges both the link directory and the managed rc block
 # on the current contents of bin/ and shell/, and never touches anything it did
@@ -38,11 +40,6 @@ ASSUME_YES=0
 DRY_RUN=0
 NO_SANDBOX=0
 
-# The shell fragment that wraps the sbx (Docker sandboxes) CLI. --no-sandbox
-# leaves it out, for machines where sbx is not installed or where you would
-# rather call it unwrapped. Nothing else in the repo depends on it.
-SANDBOX_FRAGMENT='sbx-kit-wrapper.zsh'
-
 usage() {
   cat <<'EOF'
 Usage: setup.sh [options]
@@ -53,7 +50,8 @@ becomes the command brew-upgrade-safe.
 
 Adds a managed block to your shell rc file that puts that directory on PATH and
 sources every fragment in shell/. Fragments define shell functions, so they must
-be sourced rather than executed and are never symlinked onto PATH.
+be sourced rather than executed and are never symlinked onto PATH. There are
+none at present, so the block is the PATH stanza alone.
 
 Re-running converges on the current contents of both directories: new scripts
 are linked, moved ones are repointed, links to scripts that no longer exist are
@@ -63,9 +61,10 @@ pointing outside this repo are never touched.
 Options:
   -y, --yes        Skip the confirmation prompt for editing the shell rc file.
   -n, --dry-run    Report what would change and exit without changing anything.
-      --no-sandbox Leave out the sbx (Docker sandboxes) wrapper. Everything
-                   else installs as usual. Re-running without the flag adds it
-                   back; re-running with it removes it again.
+      --no-sandbox Leave out bin/ scripts that declare "# requires: sbx"
+                   (the Docker sandboxes CLI). Everything else installs as
+                   usual. Re-running without the flag links them back;
+                   re-running with it removes them again.
   -h, --help       Show this help.
 
 Environment:
@@ -124,6 +123,25 @@ command_name() {
   esac
 }
 
+# The external tool a bin/ script declares it needs, taken from a
+# "# requires: sbx" line in its header, or empty when it declares none.
+#
+# The script naming its own dependency is what keeps this honest. A list of
+# sandbox scripts kept here would drift the moment one is added or renamed,
+# and the real question is not "is this a sandbox script" but "does this need
+# a tool the machine may not have".
+#
+# Only the header is searched, so the same words further down a script that
+# documents this convention do not turn into a requirement. The header ends at
+# the first line that is neither a comment nor blank, which beats a line count:
+# a count generous enough to be safe today is one a longer preamble outgrows
+# silently, dropping the requirement with no signal that it did.
+required_tool() {
+  awk '/^# requires: / { sub(/^# requires:[ \t]*/, ""); print; exit }
+       /^#/ || /^[[:space:]]*$/ { next }
+       { exit }' "$1"
+}
+
 in_list() {
   local needle="$1" x
   shift
@@ -179,6 +197,10 @@ stray_marker() {
 
 linked=0; updated=0; unchanged=0; pruned=0; skipped=0
 
+# Names deliberately left unlinked this run, so the prune pass below can say
+# why their link is going rather than claiming the script left bin/.
+skipped_names=()
+
 # --- link everything in bin/ ------------------------------------------------
 
 if (( DRY_RUN )); then
@@ -202,6 +224,7 @@ for src in "$BIN_SRC"/*; do
 
   if [[ ! -x "$src" ]]; then
     printf '    skip   %-24s not executable (chmod +x to install it)\n' "$base"
+    skipped_names+=("$(command_name "$src")")
     skipped=$(( skipped + 1 ))
     continue
   fi
@@ -211,6 +234,25 @@ for src in "$BIN_SRC"/*; do
     printf '    skip   %-24s cannot derive a command name\n' "$base"
     skipped=$(( skipped + 1 ))
     continue
+  fi
+
+  # A script that needs a tool this machine may not have. --no-sandbox is the
+  # opt-out for the sbx ones; a tool that is simply missing only warns, because
+  # it can be installed after this runs and a link that silently never appeared
+  # is harder to diagnose than a command that says what it wants.
+  req="$(required_tool "$src")"
+  if [[ -n "$req" ]]; then
+    if (( NO_SANDBOX )) && [[ "$req" == sbx ]]; then
+      printf '    skip   %-24s needs sbx, --no-sandbox\n' "$name"
+      skipped_names+=("$name")
+      skipped=$(( skipped + 1 ))
+      continue
+    fi
+    if ! command -v "$req" >/dev/null 2>&1; then
+      hint=''
+      [[ "$req" == sbx ]] && hint=' (--no-sandbox leaves it out)'
+      printf '    NOTE   %-24s needs %s, not installed%s\n' "$name" "$req" "$hint" >&2
+    fi
   fi
 
   # Two scripts reducing to one command (foo.sh and foo.py) would otherwise
@@ -265,7 +307,9 @@ for dest in "$TARGET"/*; do
   name="${dest##*/}"
   if in_list "$name" ${names[@]+"${names[@]}"}; then continue; fi
 
-  if [[ -e "$current" ]]; then
+  if in_list "$name" ${skipped_names[@]+"${skipped_names[@]}"}; then
+    printf '    prune  %-24s left out this run\n' "$name"
+  elif [[ -e "$current" ]]; then
     printf '    prune  %-24s no longer in bin/\n' "$name"
   else
     printf '    prune  %-24s target is gone\n' "$name"
@@ -288,11 +332,6 @@ if [[ -d "$SHELL_SRC" ]]; then
 
     base="${src##*/}"
     case "$base" in .*) continue ;; esac
-
-    if (( NO_SANDBOX )) && [[ "$base" == "$SANDBOX_FRAGMENT" ]]; then
-      printf '    skip   %-24s --no-sandbox\n' "$base"
-      continue
-    fi
 
     # A sourced file is never executed, so the executable bit is meaningless
     # here and suggests the file was meant for bin/ instead.
