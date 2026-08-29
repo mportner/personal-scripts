@@ -47,9 +47,20 @@ for f in ${files[@]+"${files[@]}"}; do
   name="$(basename -- "$f")"
   printf '%s\n' "$name"
 
+  # Parsed before it is run. `source` on a file with a syntax error prints the
+  # error, returns non-zero and carries on, so the subshell below would reach
+  # its exit with TEST_FAILURES still 0 and the runner would call a file that
+  # never ran a single assertion "ok". A test that cannot fail is worse than no
+  # test, so this is checked first and reported as its own kind of failure.
+  if ! bash -n "$f" 2>&1; then
+    printf '  FAILED (does not parse)\n'
+    failed=$((failed + 1))
+    continue
+  fi
+
   # Subshell, so a test file cannot leak state (cd, variables, traps) into the
   # next one. The failure count is read back through the exit status rather
-  # than a shared file: a test file that dies partway through then still
+  # than a shared file: a test file that exits partway through then still
   # counts as a failure instead of silently reporting the last count written.
   if (
     TEST_TMPDIR="$(mktemp -d "$TMP_ROOT/$name.XXXXXX")"
