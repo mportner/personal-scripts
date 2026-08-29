@@ -53,7 +53,8 @@ attach_line() {
     shift
     PATH="$(make_stub_path checkout):$PATH" HOME="$home" \
       SBX_DEV_STATE_ROOT="$home/state" \
-      "$PROJECT" --dry-run -y --no-token ${1+"$@"} 2>&1 | grep 'would run: sbx\|would run: exec'
+      "$PROJECT" --dry-run -y --no-token ${1+"$@"} 2>&1 \
+      | grep -E 'would run: (sbx|exec)'
   )
 }
 
