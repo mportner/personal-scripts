@@ -84,13 +84,14 @@ ASSUME_YES=0
 
 usage() {
   cat <<'EOF'
-Usage: research-sandbox [options] REPO
+Usage: research-sandbox [options] [REPO]
        research-sandbox --destroy NAME
 
 Creates a sandbox for research and planning on a GitHub repo: full network
 egress, a private clone on a container volume, and no host filesystem access.
 
-REPO is owner/repo or a https://github.com/owner/repo URL.
+REPO is owner/repo or a https://github.com/owner/repo URL. Omit it inside a
+git checkout and it is read from that checkout's origin remote.
 
 Options:
   -n, --name NAME       Sandbox name (default: research-<repo>).
@@ -107,12 +108,13 @@ Options:
   -h, --help            Show this help.
 
 Environment:
-  RESEARCH_GH_TOKEN_REF_<OWNER>  Token reference for one repository owner, e.g.
-                                 RESEARCH_GH_TOKEN_REF_MPORTNER. Owner
-                                 upper-cased, anything outside A-Z0-9 to _.
-  RESEARCH_GH_TOKEN_REF          Fallback when no owner-specific one is set.
-  RESEARCH_SEED_ROOT             Seed clone directory
-                                 (default ~/.local/state/sbx-research).
+  SBX_GH_TOKEN_REF_<OWNER>  Token reference for one repository owner, e.g.
+                            SBX_GH_TOKEN_REF_MPORTNER. Owner upper-cased,
+                            anything outside A-Z0-9 folded to _. Shared with
+                            project-sandbox, so one per owner covers both.
+  SBX_GH_TOKEN_REF          Fallback when no owner-specific one is set.
+  RESEARCH_SEED_ROOT        Seed clone directory
+                            (default ~/.local/state/sbx-research).
 
 A fine-grained token has one resource owner, so repos under a personal account
 and repos under an organisation need separate tokens. Set one variable per
@@ -134,6 +136,9 @@ is named rather than left to inference.
   Actions           Read-only        gh run view, job logs, and reading CI
   Workflows         Read and write   write to push under .github/workflows
 
+The credential model these permissions sit in is written up in full in
+docs/sandbox-github-access.md.
+
 There is no Checks permission for fine-grained tokens, only for GitHub Apps,
 so `gh pr checks` cannot work from one: it resolves statusCheckRollup, which
 reaches the Checks API and answers 403. Read CI through the Actions API:
@@ -144,14 +149,6 @@ reaches the Checks API and answers 403. Read CI through the Actions API:
 Do not grant Administration. Branch protection comes from the repo's ruleset,
 not the token, and a token that can edit the ruleset can remove its own guard.
 EOF
-}
-
-run() {
-  if (( DRY_RUN )); then
-    printf '    would run: %s\n' "$*"
-    return 0
-  fi
-  "$@"
 }
 
 while (( $# > 0 )); do
@@ -241,7 +238,35 @@ fi
 
 # --- resolve the repo -------------------------------------------------------
 
-[[ -n "${REPO_ARG:-}" ]] || { usage >&2; exit 2; }
+# Falling back to the checkout you are standing in, which is what you almost
+# always mean. Only the owner and repo are taken from it: the sandbox still
+# gets a fresh clone from GitHub, never this working tree, so running the
+# command from a dirty or half-rebased checkout changes nothing about what
+# lands inside.
+REPO_SOURCE=""
+if [[ -z "${REPO_ARG:-}" ]]; then
+  # Not a git directory is a usage error, same as before this fallback existed:
+  # there is no argument and nothing to infer one from.
+  origin_root="$(git_repo_root)" || { usage >&2; exit 2; }
+  classify_origin "$origin_root"
+  case "$ORIGIN_KIND" in
+    https|ssh)
+      REPO_ARG="$ORIGIN_URL"
+      REPO_SOURCE="origin of $origin_root"
+      ;;
+    non-github)
+      die \
+"origin of $origin_root is not a github.com remote:
+  $ORIGIN_URL
+This sandbox clones from GitHub, so pass a REPO argument instead."
+      ;;
+    none)
+      die \
+"$origin_root has no origin remote to read the repository from.
+Pass REPO explicitly, e.g. research-sandbox owner/repo."
+      ;;
+  esac
+fi
 
 parse_repo_arg
 
@@ -271,6 +296,9 @@ note "kits      $CONFIG_KIT"
 note "          $DEV_TOOLS_KIT"
 note "          $RESEARCH_KIT"
 note "repo      $owner/$repo"
+if [[ -n "$REPO_SOURCE" ]]; then
+  note "          read from the $REPO_SOURCE"
+fi
 note "sandbox   $NAME"
 note "seed      $SEED"
 
@@ -284,8 +312,8 @@ elif [[ -n "$TOKEN_REF" ]]; then
   note "          via $TOKEN_REF_SOURCE, scoped to this sandbox"
 else
   die \
-"no GitHub token reference for owner '$owner'. Set RESEARCH_GH_TOKEN_REF_$owner_key
-for this owner, or RESEARCH_GH_TOKEN_REF as a fallback, or pass --token-ref,
+"no GitHub token reference for owner '$owner'. Set SBX_GH_TOKEN_REF_$owner_key
+for this owner, or SBX_GH_TOKEN_REF as a fallback, or pass --token-ref,
   e.g. --token-ref op://Private/gh-research/credential
 Use --no-token to deliberately create a sandbox with no GitHub access.
 Do not point this at your default token: this sandbox reads untrusted web
@@ -349,6 +377,10 @@ if (( DRY_RUN )); then exit 0; fi
 
 # --- verify the staged token ------------------------------------------------
 
+# Everything else about verification is the create-time default: the full
+# permission set, and an unreachable repo aborts, because a research sandbox
+# exists only for this repo and is worth nothing without it.
+VERIFY_GIT_DIR="$SEED"
 verify_token_access
 
 printf '\n'
