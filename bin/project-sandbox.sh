@@ -120,6 +120,11 @@ Options:
       --dry-run         Print what would happen and exit.
   -h, --help            Show this help.
 
+With no terminal to prompt on, questions are not asked at all. The ones that
+only report what is about to happen are answered yes, so an unattended run
+proceeds; anything that removes something or edits a committed file is answered
+no. Either way the assumed answer is printed.
+
 Anything after -- is passed to the agent. --worktree is lifted out of it and
 handled here, in all of --worktree NAME, --worktree=NAME and -w NAME, because
 a worktree the launcher does not know about is one it cannot isolate.
@@ -155,6 +160,12 @@ confirm() {
   local reply
   if (( ASSUME_YES )); then return 0; fi
   if [[ ! -t 0 ]]; then
+    # Say which way it went. The two answers lead to opposite outcomes, so a
+    # log that records only the question having been skipped does not tell you
+    # what the run actually did, which is precisely what an unattended run has
+    # no other way of reporting.
+    note "not asked (no terminal to prompt on), answering $2:"
+    note "  $1"
     [[ "$2" == yes ]]
     return
   fi
