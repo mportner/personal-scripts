@@ -5,8 +5,8 @@
 #
 # Copyright (c) 2026 Michael Portner
 #
-# Assertions and per-test scratch directories for test/run.sh. Sourced by every
-# *_test.sh file, never executed on its own.
+# Assertions, per-test scratch directories and shared fixtures for test/run.sh.
+# Sourced by every *_test.sh file, never executed on its own.
 #
 # Each assertion prints a one-line diagnosis and marks the current test failed
 # rather than aborting, so one test reports every way it is wrong in a single
@@ -64,4 +64,22 @@ assert_file_mode() {
 # the runner's own temp root so a crashed test leaves everything in one place.
 new_scratch() {
   mktemp -d "$TEST_TMPDIR/case.XXXXXX"
+}
+
+# A checkout with a github origin, which is what the launchers derive the owner
+# from, and whose directory name is what project-sandbox names the sandbox
+# after. Shared by the launcher wiring tests, which both need one and had the
+# same fixture twice.
+make_checkout() {
+  local dir
+  dir="$(new_scratch)/checkout"
+  mkdir -p "$dir"
+  # An explicit default branch keeps git from printing its init.defaultBranch
+  # advice into the middle of the test output.
+  git -C "$dir" -c init.defaultBranch=main init -q
+  git -C "$dir" remote add origin https://github.com/mportner/example.git
+  printf 'x\n' > "$dir/a.txt"
+  git -C "$dir" add -A
+  git -C "$dir" -c user.email=t@example.com -c user.name=t commit -qm init
+  printf '%s' "$dir"
 }

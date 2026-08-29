@@ -144,6 +144,10 @@ Environment:
                             pro, ...). Defaults to the plan on the host's own
                             account. sbx stages no plan of its own, so without
                             it the banner reads "Claude API".
+  HERDR_ENV                 Set to 1 by herdr in a pane it manages. The attach
+                            then runs under argv0 "claude", which is what makes
+                            herdr see the sandbox session as an agent rather
+                            than an unidentified process.
 
 The owner comes from the checkout's origin remote, so there is nothing to pass.
 A non-GitHub origin fails preflight, and a checkout with no origin needs
@@ -695,14 +699,23 @@ fi
 
 # --- attach -----------------------------------------------------------------
 
+# What the agent is started with: the worktree this launcher handles itself
+# rather than passing through, then whatever followed --. Built once, so the
+# attach reported by --dry-run is the attach that runs.
+ATTACH_ARGS=()
+if [[ -n "$WORKTREE" ]]; then
+  ATTACH_ARGS=(--worktree "$WORKTREE")
+fi
+ATTACH_ARGS+=(${AGENT_ARGS[@]+"${AGENT_ARGS[@]}"})
+
 if (( DRY_RUN )); then
   # The rest of this path talks to a live container, so there is nothing
   # further to simulate usefully.
   if [[ -n "$WORKTREE" ]]; then
     printf '    would prepare worktree %s on branch worktree-%s\n' "$WORKTREE" "$WORKTREE"
   fi
-  printf '    would run: sbx run --name %s%s\n' "$NAME" \
-    "$(if [[ -n "$WORKTREE" ]]; then printf ' -- --worktree %s' "$WORKTREE"; fi)"
+  printf '    would run: %s\n' \
+    "$(attach_command ${ATTACH_ARGS[@]+"${ATTACH_ARGS[@]}"})"
   exit 0
 fi
 
@@ -793,13 +806,4 @@ printf '%s\n' "$FINDINGS" > "$STATE_FILE"
 printf '\n'
 step "Attaching"
 
-if [[ -n "$WORKTREE" ]]; then
-  set -- --worktree "$WORKTREE" ${AGENT_ARGS[@]+"${AGENT_ARGS[@]}"}
-else
-  set -- ${AGENT_ARGS[@]+"${AGENT_ARGS[@]}"}
-fi
-
-if (( $# > 0 )); then
-  exec sbx run --name "$NAME" -- "$@"
-fi
-exec sbx run --name "$NAME"
+exec_attach ${ATTACH_ARGS[@]+"${ATTACH_ARGS[@]}"}

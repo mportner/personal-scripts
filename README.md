@@ -196,6 +196,18 @@ have changed.
 `claude`, because a worktree it does not know about is one whose `node_modules`
 it cannot isolate from the host's.
 
+In a herdr pane the attach runs under argv0 `claude`. `project-sandbox` execs
+it that way itself; `research-sandbox` prints both spellings at the end, since
+where you attach from is not known when the sandbox is created. herdr
+identifies an agent pane by its foreground process, and a sandbox pane's is
+`sbx`, because the agent itself runs inside the container and is not in the
+host's process tree; the session hook cannot cross that boundary either.
+Without the spoof the pane reads as `agent_status: unknown` and none of `herdr
+agent get`, `agent prompt --wait` or the idle/working colouring works against
+it. It buys identification and state, not the Claude session id, so herdr
+cannot link the pane to a transcript on disk. That would mean mounting herdr's
+host socket into the sandbox, which is the boundary the sandbox exists to hold.
+
 ### `claude-config-kit`
 
 An sbx mixin kit that installs a three-line Claude Code status line and a set of

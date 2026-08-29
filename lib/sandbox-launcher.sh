@@ -9,7 +9,8 @@
 # argument parsing, deriving the repo from a checkout's origin, owner-scoped
 # token reference resolution, the op preflight, sandbox-scoped secret staging
 # and removal, its rollback, the ruleset check, post-create token verification,
-# and resolving the Claude plan name the sandbox should report.
+# resolving the Claude plan name the sandbox should report, and building the
+# attach command, including the argv0 spoof a herdr pane needs.
 #
 # These functions operate on globals their caller sets (REPO_ARG, NAME,
 # SEED, TOKEN_REF, TOKEN_REF_EXPLICIT, TOKEN_REF_SOURCE, NO_TOKEN, DRY_RUN,
@@ -548,4 +549,110 @@ check_generated_guidance() {
     printf '             claude-config-kit/files/home/.claude-config-kit/\n' >&2
     printf '             trim-sandbox-guidance.sh\n' >&2
   fi
+}
+
+# --- herdr ------------------------------------------------------------------
+
+# The agent a sandbox created from here runs: every launcher in bin/ builds its
+# sandbox with `sbx create claude`. It is a constant rather than an option
+# because the spoof below has to name the agent that is really running, and
+# this is where that assumption is depended on.
+SANDBOX_AGENT=claude
+
+# Whether the attach should run under a spoofed argv0.
+#
+# herdr has two ways to know a pane hosts an agent session, and a sandbox
+# defeats both. The rich one is a hook: `herdr integration install claude`
+# writes a Claude Code session hook that reports the session over herdr's unix
+# socket, and none of that survives the container boundary, since the sandbox
+# has neither herdr's environment, nor its socket, nor the hook installed. The
+# fallback is the process table, and the pane's foreground process is `sbx`:
+# the agent itself runs inside the container and is not in the host's process
+# tree at all. So the pane reads as agent_status unknown, never appears in
+# `herdr agent list`, and none of `agent get`, `agent read`, `agent prompt
+# --wait` or `agent wait` works against it.
+#
+# Running the attach under argv0 `claude` is enough to fix that, because
+# nothing else is missing: the OSC title already passes through, and herdr's
+# state rules already read the sandbox's screen correctly when handed a
+# snapshot of it. Only the process-table match was failing.
+#
+# Two things it does not buy, both fine for what the CLI needs:
+#
+#   session id  identification and state, not the Claude session UUID, so
+#               herdr cannot link the pane to a transcript on disk. Getting
+#               that means bind-mounting herdr's host socket into the
+#               container, which is exactly the boundary the sandbox exists to
+#               hold.
+#   the shell   `exec` replaces it, so the pane closes when the session ends
+#               rather than returning to a prompt. That is what a pane running
+#               `claude` directly does today.
+#
+# Gated on HERDR_ENV so nothing changes outside a herdr pane, and on the agent
+# kind because argv0 has to match the agent herdr is being told about: naming
+# claude for a pane hosting something else would have herdr apply Claude Code's
+# screen rules to another agent's output.
+herdr_spoofs_argv0() {
+  [[ "${HERDR_ENV:-}" == 1 && "$SANDBOX_AGENT" == claude ]]
+}
+
+# Builds the attach into ATTACH_ARGV, and sets ATTACH_ARGV0 to the name it
+# should run under, empty when it runs under its own. Both the printed form and
+# the exec below go through here, so the command reported is the command run:
+# with the `--` handling and the gate written twice, they could drift into
+# reporting one attach and running another.
+#
+# Anything passed is forwarded to the agent.
+#
+# Read by attach_command and exec_attach, which shellcheck cannot see are the
+# only callers when it lints each file on its own.
+# shellcheck disable=SC2034
+build_attach() {
+  ATTACH_ARGV=(sbx run --name "$NAME")
+  if (( $# )); then
+    ATTACH_ARGV+=(-- "$@")
+  fi
+  ATTACH_ARGV0=""
+  if herdr_spoofs_argv0; then
+    ATTACH_ARGV0="$SANDBOX_AGENT"
+  fi
+}
+
+# The attach as a line to print: research-sandbox's closing hint and
+# project-sandbox's --dry-run output.
+attach_command() {
+  local arg sep=""
+  build_attach ${1+"$@"}
+  if [[ -n "$ATTACH_ARGV0" ]]; then
+    printf 'exec -a %s ' "$ATTACH_ARGV0"
+  fi
+  # Printed to be pasted back into a shell, so an argument that would not
+  # survive that is escaped. Only where it changes something: %q on every word
+  # would spell a plain command with backslashes nobody typed, and what is
+  # usually being reported is a flag. The safe set is deliberately narrow, since
+  # escaping something that did not need it is cosmetic and missing something is
+  # a line that does not mean what it says. An empty argument is its own case,
+  # matching no pattern here and otherwise vanishing from the line.
+  for arg in "${ATTACH_ARGV[@]}"; do
+    printf '%s' "$sep"
+    sep=" "
+    case "$arg" in
+      '') printf "''" ;;
+      *[!A-Za-z0-9._/=:-]*) printf '%q' "$arg" ;;
+      *) printf '%s' "$arg" ;;
+    esac
+  done
+}
+
+# Replaces this process with the sbx attach, under the argv0 build_attach chose.
+#
+# exec rather than a child for two reasons pointing the same way: the launcher
+# has nothing left to do once the session opens, and herdr matches the pane's
+# foreground process, which has to be this one for the spoof to be seen at all.
+exec_attach() {
+  build_attach ${1+"$@"}
+  if [[ -n "$ATTACH_ARGV0" ]]; then
+    exec -a "$ATTACH_ARGV0" "${ATTACH_ARGV[@]}"
+  fi
+  exec "${ATTACH_ARGV[@]}"
 }
