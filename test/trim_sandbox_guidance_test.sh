@@ -81,6 +81,27 @@ assert_contains "$out" '# A fenced block whose contents must not be read as head
   "keeps the fenced block"
 assert_contains "$out" 'echo "export VAR_NAME=value"' "keeps the line after the fenced heading"
 
+# --- the dropped section never swallows sbx's own sentinel -------------------
+
+# The real file has another heading between the two. This is the shape that
+# arrives if sbx ever stops putting one there: the opening sentinel must survive
+# so its pair stays balanced.
+adjacent="$(new_scratch)/adjacent.md"
+{
+  printf '# Project Guidance\n\n## Tools and Commands\n\n- Use "npm install"\n\n'
+  printf '## Environment Persistence\n\nA sandbox fact.\n\n'
+  printf '## Additional Notes\n\n- Generic advice nobody wrote about this project\n\n'
+  printf '<!-- sbx:kits-section start -->\n## Kits\n\n- A kit pointer.\n'
+  printf '<!-- sbx:kits-section end -->\n'
+} > "$adjacent"
+root="$(make_sandbox "$adjacent")"
+run_trim "$root"
+out="$(cat "$root/CLAUDE.md")"
+assert_contains "$out" '<!-- sbx:kits-section start -->' "keeps the opening sentinel"
+assert_contains "$out" '<!-- sbx:kits-section end -->' "keeps the closing sentinel"
+assert_contains "$out" '## Kits' "keeps the kits heading"
+assert_not_contains "$out" 'Generic advice nobody wrote' "still drops the notes section"
+
 # --- the workspace's own file is never touched -------------------------------
 
 assert_equals '# Project pnpm rules' "$(cat "$root/ws/CLAUDE.md")" \

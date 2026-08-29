@@ -39,7 +39,11 @@ fi
 passed=0
 failed=0
 
-for f in "${files[@]}"; do
+# Guarded with the ${a[@]+...} form bash 3.2 needs for a possibly-empty array
+# under set -u. The check above already exits on an empty list; the idiom is the
+# one the rest of the repo uses, and a second spelling here would read as a
+# place where it does not matter.
+for f in ${files[@]+"${files[@]}"}; do
   name="$(basename -- "$f")"
   printf '%s\n' "$name"
 

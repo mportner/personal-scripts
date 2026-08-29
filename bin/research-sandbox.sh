@@ -304,15 +304,10 @@ content, and the global token carries repo and admin rights."
 fi
 
 # Only the banner depends on this, so an unresolved plan is a note rather than a
-# failure. See resolve_subscription_type in lib/sandbox-launcher.sh for why the
-# host keychain is not consulted.
-resolve_subscription_type
-if [[ -n "$SUBSCRIPTION_TYPE" ]]; then
-  note "plan      $SUBSCRIPTION_TYPE, read from $SUBSCRIPTION_TYPE_SOURCE"
-else
-  note "plan      not detected, so the sandbox banner will read 'Claude API'"
-  note "          set SBX_CLAUDE_SUBSCRIPTION_TYPE to fix that"
-fi
+# failure. It also sets PLAN_ENV for the create below. See
+# resolve_subscription_type in lib/sandbox-launcher.sh for why the host keychain
+# is not consulted.
+report_subscription_type
 
 # --- warn when the default branch is unprotected ----------------------------
 check_ruleset
@@ -357,13 +352,6 @@ step "Creating sandbox"
 # SBX_DEV_TOOLS_PLAYWRIGHT=0 halves the creation time (roughly 30s to 15s) by
 # skipping the browser system libraries. Research sandboxes read and reason
 # about code; they do not drive a browser.
-# Empty when no plan was resolved, so nothing is passed at all rather than an
-# empty variable the container would have to interpret. Expanded with the
-# ${a[@]+...} guard bash 3.2 needs for a possibly-empty array under set -u.
-PLAN_ENV=()
-if [[ -n "$SUBSCRIPTION_TYPE" ]]; then
-  PLAN_ENV=(-e "SBX_CLAUDE_SUBSCRIPTION_TYPE=$SUBSCRIPTION_TYPE")
-fi
 if ! run sbx create claude --clone --name "$NAME" \
   -e SBX_DEV_TOOLS_PLAYWRIGHT=0 \
   ${PLAN_ENV[@]+"${PLAN_ENV[@]}"} \
@@ -384,6 +372,10 @@ if (( DRY_RUN )); then exit 0; fi
 # exists only for this repo and is worth nothing without it.
 VERIFY_GIT_DIR="$SEED"
 verify_token_access
+
+printf '\n'
+step "Checking the generated instructions"
+check_generated_guidance
 
 printf '\n'
 step "Ready"

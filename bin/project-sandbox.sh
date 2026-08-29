@@ -538,15 +538,10 @@ sandboxes is the whole reason this command exists."
 fi
 
 # Only the banner depends on this, so an unresolved plan is a note rather than a
-# failure. See resolve_subscription_type in lib/sandbox-launcher.sh for why the
-# host keychain is not consulted.
-resolve_subscription_type
-if [[ -n "$SUBSCRIPTION_TYPE" ]]; then
-  note "plan      $SUBSCRIPTION_TYPE, read from $SUBSCRIPTION_TYPE_SOURCE"
-else
-  note "plan      not detected, so the sandbox banner will read 'Claude API'"
-  note "          set SBX_CLAUDE_SUBSCRIPTION_TYPE to fix that"
-fi
+# failure. It also sets PLAN_ENV for the create below. See
+# resolve_subscription_type in lib/sandbox-launcher.sh for why the host keychain
+# is not consulted.
+report_subscription_type
 
 # A global secret is inherited by any sandbox that has none of its own, which
 # makes the narrow token above a courtesy rather than a boundary. Reported
@@ -654,13 +649,6 @@ if [[ "$MODE" == create ]]; then
 
   printf '\n'
   step "Creating sandbox"
-  # Empty when no plan was resolved, so nothing is passed at all rather than an
-  # empty variable the container would have to interpret. Expanded with the
-  # ${a[@]+...} guard bash 3.2 needs for a possibly-empty array under set -u.
-  PLAN_ENV=()
-  if [[ -n "$SUBSCRIPTION_TYPE" ]]; then
-    PLAN_ENV=(-e "SBX_CLAUDE_SUBSCRIPTION_TYPE=$SUBSCRIPTION_TYPE")
-  fi
   # No --clone and no research-kit: the workspace is the checkout itself, and
   # the open-egress policy is only sound alongside clone isolation.
   if ! run sbx create claude --name "$NAME" \
@@ -681,6 +669,10 @@ if [[ "$MODE" == create ]]; then
   VERIFY_GIT_DIR="$REPO_ROOT"
   VERIFIED=1
   if ! verify_token_access; then VERIFIED=0; fi
+
+  printf '\n'
+  step "Checking the generated instructions"
+  check_generated_guidance
 
   mkdir -p "$STATE_ROOT"
   printf '%s\n' "$FINDINGS" > "$STATE_FILE"

@@ -1,3 +1,4 @@
+#!/bin/sh
 #
 # File:    stamp-subscription-type.sh
 # Created: 2026-08-29

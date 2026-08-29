@@ -86,7 +86,7 @@ jobs:
       # -P test resolves the harness's own `# shellcheck source=` comments,
       # which are relative to test/ rather than to the checkout root.
       - name: Check the test harness
-        run: shellcheck -x -s bash -P test test/run.sh test/lib-assert.sh test/*_test.sh
+        run: shellcheck -x -s bash -P test test/*.sh
 
       # bash 3.2 has no mapfile/readarray and no associative arrays, and macOS
       # will not be getting a newer bash. Catching these here is cheaper than

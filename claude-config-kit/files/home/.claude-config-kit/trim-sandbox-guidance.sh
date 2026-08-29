@@ -1,3 +1,4 @@
+#!/bin/sh
 #
 # File:    trim-sandbox-guidance.sh
 # Created: 2026-08-29
@@ -108,15 +109,24 @@ EOF
 
   # Fences are tracked so a "## ..." line inside a code block is content, not a
   # heading: the persistent-environment section quotes exactly that shape.
+  #
+  # An HTML comment ends the skipped section as surely as the next heading does.
+  # sbx wraps its own `## Kits` section in <!-- sbx:kits-section start --> and
+  # end markers, and today another heading separates that from the dropped
+  # section. If it ever stops doing so, ending the skip only on a heading would
+  # swallow the opening marker and keep the closing one, leaving sbx's own
+  # sentinel pair unbalanced.
   awk -v anchor="$ANCHOR" -v drop="$DROP" '
     BEGIN { started = 0; skipping = 0; fence = 0 }
     {
       if (substr($0, 1, 3) == "```") { fence = !fence }
       is_h2 = (!fence && substr($0, 1, 3) == "## ")
+      is_comment = (!fence && substr($0, 1, 4) == "<!--")
       if (!started) {
         if (is_h2 && $0 == anchor) { started = 1 } else { next }
       }
       if (is_h2) { skipping = ($0 == drop) }
+      else if (is_comment) { skipping = 0 }
       if (!skipping) { print }
     }
   ' "$target"

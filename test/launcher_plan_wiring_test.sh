@@ -32,8 +32,10 @@ make_stub_path() {
 }
 
 # A host home whose account record reports $1 as the organisation type, or no
-# record at all when $1 is empty.
-make_host_home() {
+# record at all when $1 is empty. Named apart from the make_host_home in
+# resolve_subscription_type_test.sh, which takes the same first argument but
+# also accepts the malformed shapes that test needs.
+make_account_home() {
   local home
   home="$(new_scratch)"
   [[ -n "${1-}" ]] && printf '{"oauthAccount":{"organizationType":"%s"}}' "$1" > "$home/.claude.json"
@@ -75,7 +77,7 @@ run_research() {
 
 # --- the plan reaches sbx create ---------------------------------------------
 
-home="$(make_host_home claude_pro)"
+home="$(make_account_home claude_pro)"
 out="$(run_project "$home" "$(make_checkout)")"
 assert_contains "$out" 'plan      pro, read from ~/.claude.json' "project-sandbox reports the plan"
 assert_contains "$out" '-e SBX_CLAUDE_SUBSCRIPTION_TYPE=pro' "project-sandbox passes the plan to create"
@@ -96,7 +98,7 @@ assert_contains "$out" '-e SBX_CLAUDE_SUBSCRIPTION_TYPE=max' "an explicit plan r
 # would be rather than anywhere in the output.
 create_line() { printf '%s\n' "$1" | grep 'would run: sbx create'; }
 
-home="$(make_host_home)"
+home="$(make_account_home)"
 out="$(run_project "$home" "$(make_checkout)")"
 assert_contains "$out" "the sandbox banner will read 'Claude API'" "says the banner will be wrong"
 assert_contains "$out" 'would run: sbx create' "still reports the create it would run"

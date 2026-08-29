@@ -108,6 +108,15 @@ why. It is idempotent through the marker comment on the first line, and sbx
 writes the file at creation only, so in practice it rewrites once and no-ops on
 every later start.
 
+Declining quietly is the right answer for a file another tool owns, but it would
+also be how the fix switches itself off: a change to sbx's template leaves the
+invented guidance in place with one line in a container log nobody reads. So
+both launchers check after creating a sandbox that the first line is the marker,
+and warn with the line they actually found when it is not
+(`check_generated_guidance` in `lib/sandbox-launcher.sh`). It is the same
+argument as the post-create token check next to it: nothing before that point
+exercised the thing being relied on.
+
 ## Why it writes `subscriptionType` into the credential file
 
 The claude agent spec inside sbx renders the sandbox's OAuth credential file
@@ -218,6 +227,14 @@ Tested again against sbx 0.39.0 for the two repairs, on a sandbox created with
   `/var/log/sbx-kit-startup.log` reporting both commands `ok`.
 - `sbx stop` and restart leaves the file byte-identical, with no second trim and
   no second stamp: both scripts recognise their own work.
+- The same holds in `--clone` mode, which is what `research-sandbox` creates:
+  `WORKSPACE_DIR` points at the in-container clone, so the file trimmed is the
+  one above it.
+
+What is **not** verified here is the rendered banner. The `subscriptionType`
+field is written and reads back as the plan; that Claude Code then prints the
+plan name rather than `Claude API` follows from where the label comes from, but
+it was not observed in a session.
 
 ## Applying it to an existing sandbox
 
