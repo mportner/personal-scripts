@@ -48,8 +48,15 @@ jobs:
       # are checked as bash rather than sh even though they avoid bash 4
       # features. shellcheck has no 3.2 dialect; the constraint is enforced by
       # the grep step below instead.
+      #
+      # lib/*.sh is sourced by bin/*.sh, never run standalone, so -x makes
+      # shellcheck follow the `source` lines instead of just noting them, and
+      # -P SCRIPTDIR resolves each `# shellcheck source=` comment relative to
+      # the sourcing script's own directory rather than the current directory,
+      # which is what makes bin/research-sandbox.sh's `source=../lib/...`
+      # comments resolve correctly.
       - name: Check bash scripts
-        run: shellcheck -s bash setup.sh uninstall.sh bin/*.sh
+        run: shellcheck -x -s bash -P SCRIPTDIR setup.sh uninstall.sh bin/*.sh lib/*.sh
 
       - name: Check the status line (POSIX sh)
         run: shellcheck -s sh claude-config-kit/files/home/.claude/statusline.sh
@@ -79,7 +86,7 @@ jobs:
           # scripts have a header comment saying "no mapfile", which a naive
           # pattern would flag as a violation of itself.
           if grep -nE '^[^#]*(\b(mapfile|readarray)\b|declare -A|local -A)' \
-               setup.sh uninstall.sh bin/*.sh; then
+               setup.sh uninstall.sh bin/*.sh lib/*.sh; then
             echo "::error::bash 4+ construct found; these scripts target bash 3.2"
             exit 1
           fi
