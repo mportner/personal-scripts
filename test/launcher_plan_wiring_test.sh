@@ -42,22 +42,6 @@ make_account_home() {
   printf '%s' "$home"
 }
 
-# A checkout with a github origin, which is what the launchers derive the owner
-# from.
-make_checkout() {
-  local dir
-  dir="$(new_scratch)/checkout"
-  mkdir -p "$dir"
-  # An explicit default branch keeps git from printing its init.defaultBranch
-  # advice into the middle of the test output.
-  git -C "$dir" -c init.defaultBranch=main init -q
-  git -C "$dir" remote add origin https://github.com/mportner/example.git
-  printf 'x\n' > "$dir/a.txt"
-  git -C "$dir" add -A
-  git -C "$dir" -c user.email=t@example.com -c user.name=t commit -qm init
-  printf '%s' "$dir"
-}
-
 run_project() {
   # $1 host home, $2 checkout
   (

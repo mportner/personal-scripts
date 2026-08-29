@@ -121,6 +121,10 @@ Environment:
                             pro, ...). Defaults to the plan on the host's own
                             account. sbx stages no plan of its own, so without
                             it the banner reads "Claude API".
+  HERDR_ENV                 Set to 1 by herdr in a pane it manages. The attach
+                            it prints then runs under argv0 "claude", which is
+                            what makes herdr see the sandbox session as an
+                            agent rather than an unidentified process.
 
 A fine-grained token has one resource owner, so repos under a personal account
 and repos under an organisation need separate tokens. Set one variable per
@@ -379,6 +383,21 @@ check_generated_guidance
 
 printf '\n'
 step "Ready"
-note "attach:            sbx run --name $NAME"
+# Both spellings, and neither gated on this shell. Which one is right depends
+# on where the session is attached from, and that is not known here: a sandbox
+# created in a herdr pane is often attached from a different one, and one
+# created in a plain terminal may well be attached inside herdr later. So the
+# question HERDR_ENV answers here is not the question being asked, and the
+# herdr form is printed as its own labelled line instead of replacing the
+# plain one. project-sandbox has no such problem: it attaches itself, in the
+# shell doing the asking.
+#
+# Both go through the shared builder, in a command substitution so setting
+# HERDR_ENV for the call cannot leak past it. No arguments on purpose: this
+# launcher has none to forward, and the hint is a command to run by hand.
+# shellcheck disable=SC2119
+note "attach:            $(HERDR_ENV=0 attach_command)"
+# shellcheck disable=SC2119
+note "in a herdr pane:   $(HERDR_ENV=1 attach_command)"
 note "retrieve work:     git -C $SEED fetch sandbox-$NAME && git -C $SEED log sandbox-$NAME/main"
 note "tear down:         research-sandbox --destroy $NAME"
