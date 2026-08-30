@@ -597,25 +597,39 @@ herdr_spoofs_argv0() {
   [[ "${HERDR_ENV:-}" == 1 && "$SANDBOX_AGENT" == claude ]]
 }
 
-# Whether sandbox $NAME is running, as opposed to existing but stopped.
+# Whether sandbox $NAME is running. Three outcomes, because two of them answer
+# different questions:
+#
+#   0  running
+#   1  not running, definitively: sbx answered and the status was not "running"
+#   2  could not tell: jq is missing, sbx failed, or the sandbox was not listed
+#
+# The 1-versus-2 split is the point. A definitive "not running" means there are
+# no agents in there and nothing for the caller to warn about. A status that
+# could not be read means the opposite is still possible, and reporting it as
+# "no agents" would silence exactly the warning the count exists to raise.
 #
 # Asked before the agent count below, and the only reason that count is safe to
 # take: `sbx exec` starts a stopped sandbox before running anything in it, and
-# a --dry-run that boots a container is not a dry run. A stopped sandbox has no
-# agents running in it either way, so nothing is lost by not asking.
+# a --dry-run that boots a container is not a dry run.
 #
-# jq is needed only here, and is handled the way check_ruleset handles it:
-# without jq the status cannot be read and the sandbox is reported as not
-# running, which costs the advisory count and never starts anything by
-# surprise. A `sbx ls` table parse would avoid the dependency, but the columns
-# are a display format and the JSON is the interface.
+# A `sbx ls` table parse would avoid the jq dependency, but the columns are a
+# display format and the JSON is the interface.
 sandbox_running() {
   local status
-  command -v jq >/dev/null 2>&1 || return 1
+  command -v jq >/dev/null 2>&1 || return 2
+  # Deliberately not `|| printf ''` inside the substitution: swallowing the
+  # failure there is what turns an unreadable status into a confident answer.
+  # Callers set pipefail, so a failing sbx fails the pipeline even though jq
+  # succeeds on the empty input it is handed.
   status="$(sbx ls --json 2>/dev/null \
     | jq -r --arg n "$NAME" '.sandboxes[]? | select(.name == $n) | .status' \
-      2>/dev/null || printf '')"
-  [[ "$status" == running ]]
+      2>/dev/null)" || return 2
+  case "$status" in
+    running) return 0 ;;
+    '')      return 2 ;;
+    *)       return 1 ;;
+  esac
 }
 
 # How many agent processes are alive in sandbox $NAME, as a number, or empty
@@ -635,17 +649,27 @@ sandbox_running() {
 # and sbx itself fails when the sandbox is gone. Neither is worth aborting an
 # attach over, since the attach that follows reports the real error.
 agent_session_count() {
-  local n
-  # Asked before sandbox_running, which cannot answer without jq either and
-  # would report a running sandbox as stopped, turning "could not tell" into a
-  # confident zero.
-  command -v jq >/dev/null 2>&1 || return 0
-  sandbox_running || { printf '0'; return 0; }
-  n="$(sbx exec "$NAME" pgrep -xc "$SANDBOX_AGENT" 2>/dev/null)" || n=""
-  case "$n" in
-    ''|*[!0-9]*) n=0 ;;
+  local n rc=0
+  # `|| rc=$?` keeps this a condition context, so a non-zero return here does
+  # not trip the caller's set -e.
+  sandbox_running || rc=$?
+  case "$rc" in
+    0) ;;                       # running: worth asking
+    1) printf '0'; return 0 ;;  # definitively stopped: no agents, and no boot
+    *) return 0 ;;              # could not tell: say so by saying nothing
   esac
-  printf '%s' "$n"
+  # `|| true` rather than `|| n=""`: pgrep exits 1 when nothing matches, having
+  # already printed a perfectly good 0, and discarding that would report a
+  # known zero as unknown. The substitution assigns whatever was printed
+  # regardless of the status, so the output survives and only set -e is
+  # appeased.
+  n="$(sbx exec "$NAME" pgrep -xc "$SANDBOX_AGENT" 2>/dev/null)" || true
+  case "$n" in
+    # Nothing, or not a number: sbx could not run pgrep at all, which is the
+    # same "could not tell" as an unreadable status and not a zero.
+    ''|*[!0-9]*) return 0 ;;
+    *) printf '%s' "$n" ;;
+  esac
 }
 
 # Builds the attach into ATTACH_ARGV, and sets ATTACH_ARGV0 to the name it

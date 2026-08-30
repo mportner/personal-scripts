@@ -137,48 +137,78 @@ assert_contains "$(run_attach - 0 --attach mportner/example 2>&1)" \
   'is a repository, not a sandbox name' \
   "a repository passed where the sandbox name goes says so"
 
-# --- agent_session_count --------------------------------------------------
+# --- sandbox_running and agent_session_count --------------------------------
 
-# A shell function shadows a command of the same name, so this stands in for
-# the sbx the lib would otherwise call.
+# One stub for both. A shell function shadows the real sbx and survives PATH
+# being emptied, which is how the jq-missing branch is reached. An empty
+# STUB_STATUS stands for a sandbox sbx does not list at all.
+STUB_OUT=""
+STUB_RC=0
+STUB_STATUS=running
+STUB_LS_RC=0
+sbx() {
+  if [ "$1" = ls ]; then
+    if [ -z "$STUB_STATUS" ]; then
+      printf '{"sandboxes":[]}\n'
+    else
+      printf '{"sandboxes":[{"name":"demo","status":"%s"}]}\n' "$STUB_STATUS"
+    fi
+    return "$STUB_LS_RC"
+  fi
+  printf '%s\n' "$STUB_OUT"
+  return "$STUB_RC"
+}
+
+running_rc() {
+  # $1 status ('' for a sandbox that is not listed), $2 `sbx ls` exit status,
+  # $3 PATH to run under. Prints sandbox_running's exit status.
+  (
+    STUB_STATUS="$1"
+    STUB_LS_RC="${2:-0}"
+    if [ -n "${3:-}" ]; then PATH="$3"; fi
+    NAME=demo
+    sandbox_running
+    printf '%s' "$?"
+  )
+}
+
 count_with() {
-  # $1 what the stub prints for the pgrep call, $2 its exit status, $3 the
-  # status `sbx ls --json` reports for the sandbox (default running). The stub
-  # reads these from the environment rather than positionally, because it is
-  # called with the lib's arguments, not this function's.
+  # $1 pgrep output, $2 pgrep exit status, $3 sandbox status (default running,
+  # pass '' for not listed), $4 `sbx ls` exit status.
   (
     STUB_OUT="$1"
     STUB_RC="$2"
-    STUB_STATUS="${3:-running}"
-    # $4 replaces PATH, which is how the jq-missing branch is reached. The stub
-    # below is a shell function, so it survives having PATH emptied.
-    [[ -n "${4:-}" ]] && PATH="$4"
-    sbx() {
-      if [ "$1" = ls ]; then
-        printf '{"sandboxes":[{"name":"demo","status":"%s"}]}\n' "$STUB_STATUS"
-        return 0
-      fi
-      printf '%s\n' "$STUB_OUT"
-      return "$STUB_RC"
-    }
+    STUB_STATUS="${3-running}"
+    STUB_LS_RC="${4:-0}"
     NAME=demo
     agent_session_count
   )
 }
 
-assert_equals "0" "$(count_with 0 1)" \
-  "pgrep printing 0 and exiting non-zero counts as no agents"
+# The 1-versus-2 split is what keeps an unreadable status from being reported
+# as "nothing is running here".
+assert_equals "0" "$(running_rc running)" \
+  "a running sandbox reports running"
+assert_equals "1" "$(running_rc stopped)" \
+  "a stopped sandbox is a definitive no, not an unknown"
+assert_equals "2" "$(running_rc '')" \
+  "a sandbox sbx does not list is unknown, not stopped"
+assert_equals "2" "$(running_rc running 1)" \
+  "sbx failing to answer is unknown, not stopped"
+assert_equals "2" "$(running_rc running 0 /nonexistent)" \
+  "without jq the status cannot be read, so it is unknown"
+
 assert_equals "3" "$(count_with 3 0)" \
   "a plain count is read straight through"
-assert_equals "0" "$(count_with 'error: no such sandbox' 1)" \
-  "output that is not a number counts as no agents"
-
-# The count is what forces the question, since `sbx exec` would start a stopped
-# sandbox to answer it.
+# pgrep exits 1 when nothing matches, having printed a perfectly good 0. That
+# is a known zero and must not be laundered into unknown.
+assert_equals "0" "$(count_with 0 1)" \
+  "pgrep printing 0 and exiting non-zero is a known zero"
+# The count is what forces the status question, since `sbx exec` would start a
+# stopped sandbox to answer it.
 assert_equals "0" "$(count_with 9 0 stopped)" \
   "a stopped sandbox reports no agents without being asked"
-
-# Empty, not "0": without jq the status cannot be read, and reporting that as
-# no agents would state the opposite of what is known as though it were a fact.
-assert_equals "" "$(count_with 9 0 running /nonexistent)" \
-  "without jq the count is unknown rather than zero"
+assert_equals "" "$(count_with 9 0 running 1)" \
+  "an unreadable status gives an unknown count rather than zero"
+assert_equals "" "$(count_with 'error: no such sandbox' 1)" \
+  "output that is not a number is unknown rather than zero"

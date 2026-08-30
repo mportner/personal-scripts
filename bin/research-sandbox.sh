@@ -349,8 +349,12 @@ See what exists with: sbx ls"
   AGENTS="$(agent_session_count)"
   if [[ -n "$AGENTS" ]]; then
     note "agents running     $AGENTS"
-  else
+  elif ! command -v jq >/dev/null 2>&1; then
+    # Named explicitly because it is the one cause with an obvious fix, the way
+    # check_ruleset names it. Anything else is the sandbox not answering.
     note "agents running     unknown, jq is not installed on the host"
+  else
+    note "agents running     unknown, the sandbox did not answer"
   fi
   if [[ -n "$WORKTREE" ]]; then
     note "worktree           $WORKTREE (branch worktree-$WORKTREE)"
