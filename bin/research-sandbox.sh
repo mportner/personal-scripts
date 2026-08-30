@@ -507,28 +507,51 @@ check_generated_guidance
 
 printf '\n'
 step "Ready"
-# --attach leads, because it is the form that picks the argv0 spoof for the
-# shell it actually runs in and reports what is already in the sandbox. The
-# raw sbx commands stay, since an attach is often pasted into a pane other
-# than this one.
+
+# One command in the block below: the label it goes by, and the command itself
+# in a column. Local to this launcher because the block is: project-sandbox's
+# is three lines with no sections to align.
+hint() { printf '      %-17s%s\n' "$1" "$2"; }
+
+# Grouped under headers rather than listed flat, because the four
+# attach-shaped lines are not four alternatives. Two are this launcher and two
+# are the same attach run by hand, and in one flat list "in a herdr pane" reads
+# as the herdr answer and --attach as the general one. That is backwards:
+# --attach is the form that picks the argv0 spoof, for the shell it actually
+# runs in, and the header is what says so without a paragraph of prose in
+# output that gets read many times.
 #
-# Both raw spellings are printed, and neither is gated on this shell. Which one
+# The raw spellings stay, since an attach is often pasted into a pane other
+# than this one. Both are printed and neither is gated on this shell: which one
 # is right depends on where the session is attached from, and that is not known
-# here: a sandbox created in a herdr pane is often attached from a different
-# one, and one created in a plain terminal may well be attached inside herdr
-# later. So the question HERDR_ENV answers here is not the question being
-# asked, and the herdr form is printed as its own labelled line instead of
-# replacing the plain one. project-sandbox has no such problem: it attaches
-# itself, in the shell doing the asking.
+# here, because a sandbox created in a herdr pane is often attached from a
+# different one, and one created in a plain terminal may well be attached
+# inside herdr later. So the question HERDR_ENV answers here is not the
+# question being asked. project-sandbox has no such problem, and no such
+# section: it attaches itself, in the shell doing the asking.
 #
 # Both go through the shared builder, in a command substitution so setting
 # HERDR_ENV for the call cannot leak past it. No arguments on purpose: this
 # launcher has none to forward, and the hint is a command to run by hand.
-note "attach:            research-sandbox --attach $NAME"
-note "another agent:     research-sandbox --attach $NAME --worktree NAME"
+note "Attach an agent"
+hint "first agent"     "research-sandbox --attach $NAME"
+hint "another agent"   "research-sandbox --attach $NAME --worktree NAME"
+
+printf '\n'
+note "Attach without the launcher"
 # shellcheck disable=SC2119
-note "raw attach:        $(HERDR_ENV=0 attach_command)"
+hint "any shell"       "$(HERDR_ENV=0 attach_command)"
 # shellcheck disable=SC2119
-note "in a herdr pane:   $(HERDR_ENV=1 attach_command)"
-note "retrieve work:     git -C $SEED fetch sandbox-$NAME && git -C $SEED log sandbox-$NAME/main"
-note "tear down:         research-sandbox --destroy $NAME"
+hint "in a herdr pane" "$(HERDR_ENV=1 attach_command)"
+
+# Two commands rather than one `&&` chain: they run at different times, one
+# when the sandbox has work worth pulling and the other whenever you want to
+# see it, and joined they are a line no terminal shows without wrapping.
+printf '\n'
+note "Retrieve work"
+hint "fetch"           "git -C $SEED fetch sandbox-$NAME"
+hint "log"             "git -C $SEED log sandbox-$NAME/main"
+
+printf '\n'
+note "Tear down"
+hint "destroy"         "research-sandbox --destroy $NAME"
