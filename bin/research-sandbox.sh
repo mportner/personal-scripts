@@ -150,23 +150,13 @@ docs/sandbox-github-access.md.
 EOF
 }
 
-# --worktree needs a name, and this is deliberately stricter than `claude`,
-# which will happily invent one. Naming it here is what lets the launcher
-# report the branch it lands on and warn about the tree it does not share, and
-# a worktree the launcher cannot name is one it cannot say anything about.
-# Kept in step with project-sandbox's flag of the same name.
-take_worktree() {
-  # -* rejected as well as empty: `--worktree --dry-run` would otherwise name a
-  # worktree after the flag that followed it and swallow that flag silently.
-  case "${1:-}" in
-    ''|-*) die \
-"--worktree needs a name, e.g. --worktree review-fixes" ;;
-  esac
-  WORKTREE="$1"
-  WORKTREE_SEEN=1
-}
-
 while (( $# > 0 )); do
+  # Both spellings of --worktree come from the launcher library, so this
+  # launcher and project-sandbox insist on the same thing in the same words. It
+  # reports through WORKTREE_SHIFT how much of "$@" it consumed. Nothing is
+  # added to WORKTREE_NAME_REASON: this launcher forwards the flag and
+  # pre-creates nothing, so there is no machinery to explain.
+  if take_worktree_flag "$@"; then shift "$WORKTREE_SHIFT"; continue; fi
   case "$1" in
     -n|--name)      need_value "$@"; NAME="$2"; shift ;;
     -r|--token-ref)
@@ -188,8 +178,6 @@ Use --no-token to create a sandbox with no GitHub access."
     -a|--attach)
       ATTACH=1
       if [[ -n "${2:-}" && "$2" != -* ]]; then NAME="$2"; shift; fi ;;
-    -w|--worktree)  need_value "$@"; take_worktree "$2"; shift ;;
-    --worktree=*)   take_worktree "${1#--worktree=}" ;;
     --destroy)      need_value "$@"; DESTROY=1; NAME="$2"; shift ;;
     -f|--force)     FORCE=1 ;;
     -y|--yes)       ASSUME_YES=1 ;;
@@ -335,10 +323,7 @@ Pass it as the REPO argument instead:
   step "Attaching to $NAME"
   note "sandbox            $NAME"
 
-  # `sbx ls -q` prints one name per line, so an exact whole-line match is
-  # enough and avoids a substring hit on a longer name containing this one.
-  # Matching project-sandbox, which decides create-or-attach the same way.
-  if ! sbx ls -q 2>/dev/null | grep -qxF -- "$NAME"; then
+  if ! sandbox_exists; then
     die \
 "no sandbox named '$NAME'.
 Create one with:      research-sandbox [REPO]
@@ -377,11 +362,10 @@ See what exists with: sbx ls"
     note "         NAME to give this one a tree of its own."
   fi
 
-  # Built once, so the attach reported by --dry-run is the attach that runs.
-  ATTACH_ARGS=()
-  if [[ -n "$WORKTREE" ]]; then
-    ATTACH_ARGS=(--worktree "$WORKTREE")
-  fi
+  # No arguments of its own to add: this launcher has no `--` of its own, so
+  # the worktree is all the agent is started with.
+  # shellcheck disable=SC2119
+  build_attach_args
 
   if (( DRY_RUN )); then
     printf '    would run: %s\n' \
@@ -523,28 +507,51 @@ check_generated_guidance
 
 printf '\n'
 step "Ready"
-# --attach leads, because it is the form that picks the argv0 spoof for the
-# shell it actually runs in and reports what is already in the sandbox. The
-# raw sbx commands stay, since an attach is often pasted into a pane other
-# than this one.
+
+# One command in the block below: the label it goes by, and the command itself
+# in a column. Local to this launcher because the block is: project-sandbox's
+# is three lines with no sections to align.
+hint() { printf '      %-17s%s\n' "$1" "$2"; }
+
+# Grouped under headers rather than listed flat, because the four
+# attach-shaped lines are not four alternatives. Two are this launcher and two
+# are the same attach run by hand, and in one flat list "in a herdr pane" reads
+# as the herdr answer and --attach as the general one. That is backwards:
+# --attach is the form that picks the argv0 spoof, for the shell it actually
+# runs in, and the header is what says so without a paragraph of prose in
+# output that gets read many times.
 #
-# Both raw spellings are printed, and neither is gated on this shell. Which one
+# The raw spellings stay, since an attach is often pasted into a pane other
+# than this one. Both are printed and neither is gated on this shell: which one
 # is right depends on where the session is attached from, and that is not known
-# here: a sandbox created in a herdr pane is often attached from a different
-# one, and one created in a plain terminal may well be attached inside herdr
-# later. So the question HERDR_ENV answers here is not the question being
-# asked, and the herdr form is printed as its own labelled line instead of
-# replacing the plain one. project-sandbox has no such problem: it attaches
-# itself, in the shell doing the asking.
+# here, because a sandbox created in a herdr pane is often attached from a
+# different one, and one created in a plain terminal may well be attached
+# inside herdr later. So the question HERDR_ENV answers here is not the
+# question being asked. project-sandbox has no such problem, and no such
+# section: it attaches itself, in the shell doing the asking.
 #
 # Both go through the shared builder, in a command substitution so setting
 # HERDR_ENV for the call cannot leak past it. No arguments on purpose: this
 # launcher has none to forward, and the hint is a command to run by hand.
-note "attach:            research-sandbox --attach $NAME"
-note "another agent:     research-sandbox --attach $NAME --worktree NAME"
+note "Attach an agent"
+hint "first agent"     "research-sandbox --attach $NAME"
+hint "another agent"   "research-sandbox --attach $NAME --worktree NAME"
+
+printf '\n'
+note "Attach without the launcher"
 # shellcheck disable=SC2119
-note "raw attach:        $(HERDR_ENV=0 attach_command)"
+hint "any shell"       "$(HERDR_ENV=0 attach_command)"
 # shellcheck disable=SC2119
-note "in a herdr pane:   $(HERDR_ENV=1 attach_command)"
-note "retrieve work:     git -C $SEED fetch sandbox-$NAME && git -C $SEED log sandbox-$NAME/main"
-note "tear down:         research-sandbox --destroy $NAME"
+hint "in a herdr pane" "$(HERDR_ENV=1 attach_command)"
+
+# Two commands rather than one `&&` chain: they run at different times, one
+# when the sandbox has work worth pulling and the other whenever you want to
+# see it, and joined they are a line no terminal shows without wrapping.
+printf '\n'
+note "Retrieve work"
+hint "fetch"           "git -C $SEED fetch sandbox-$NAME"
+hint "log"             "git -C $SEED log sandbox-$NAME/main"
+
+printf '\n'
+note "Tear down"
+hint "destroy"         "research-sandbox --destroy $NAME"

@@ -188,22 +188,6 @@ confirm() {
   esac
 }
 
-# --worktree needs a name, and this is deliberately stricter than `claude`,
-# which will happily invent one. A worktree we cannot name is a worktree we
-# cannot pre-create, and one the agent creates for itself gets no node_modules
-# isolation at all.
-take_worktree() {
-  case "${1:-}" in
-    ''|-*) die \
-"--worktree needs a name, e.g. --worktree review-fixes
-This is narrower than \`claude --worktree\` on purpose: the name is what lets
-the launcher pre-create the worktree and isolate its node_modules, so one it
-cannot name is one it cannot prepare." ;;
-  esac
-  WORKTREE="$1"
-  WORKTREE_SEEN=1
-}
-
 # dev-tools-kit gives every bind-mounted node_modules a private directory on
 # the container's own filesystem, but it does that in a startup command, over
 # the workspace as it stood when the container started. A worktree added
@@ -316,7 +300,18 @@ isolate_worktree_node_modules() {
 # Everything after -- belongs to the agent, except --worktree, which is lifted
 # back out below.
 
+# Why this launcher insists on a name, appended by the library to the message
+# it shares with research-sandbox. A worktree we cannot name is one we cannot
+# pre-create, and one the agent creates for itself gets no node_modules
+# isolation at all, which is this launcher's concern alone.
+WORKTREE_NAME_REASON="This is narrower than \`claude --worktree\` on purpose: the name is what lets
+the launcher pre-create the worktree and isolate its node_modules, so one it
+cannot name is one it cannot prepare."
+
 while (( $# > 0 )); do
+  # Both spellings of --worktree come from the launcher library, which reports
+  # through WORKTREE_SHIFT how much of "$@" it consumed.
+  if take_worktree_flag "$@"; then shift "$WORKTREE_SHIFT"; continue; fi
   case "$1" in
     -n|--name)      need_value "$@"; NAME="$2"; shift ;;
     -r|--token-ref)
@@ -330,8 +325,6 @@ while (( $# > 0 )); do
   e.g. --token-ref op://Private/gh-dev/credential
 Use --no-token to create a sandbox with no GitHub access."
       TOKEN_REF="$2"; TOKEN_REF_EXPLICIT=1; shift ;;
-    -w|--worktree)  take_worktree "${2:-}"; shift ;;
-    --worktree=*)   take_worktree "${1#--worktree=}" ;;
     --no-token)     NO_TOKEN=1 ;;
     --no-playwright) PLAYWRIGHT=0 ;;
     --verify)       VERIFY=1 ;;
@@ -352,11 +345,8 @@ done
 # a worktree that appears after the container started has no isolation.
 AGENT_ARGS=()
 while (( $# > 0 )); do
-  case "$1" in
-    -w|--worktree)  take_worktree "${2:-}"; shift ;;
-    --worktree=*)   take_worktree "${1#--worktree=}" ;;
-    *)              AGENT_ARGS+=("$1") ;;
-  esac
+  if take_worktree_flag "$@"; then shift "$WORKTREE_SHIFT"; continue; fi
+  AGENT_ARGS+=("$1")
   shift
 done
 
@@ -486,9 +476,7 @@ esac
 
 STATE_FILE="$STATE_ROOT/$NAME.state"
 
-# `sbx ls -q` prints one name per line, so an exact whole-line match is enough
-# and avoids a substring hit on a longer name that contains this one.
-if sbx ls -q 2>/dev/null | grep -qxF -- "$NAME"; then
+if sandbox_exists; then
   MODE=attach
 else
   MODE=create
@@ -700,13 +688,8 @@ fi
 # --- attach -----------------------------------------------------------------
 
 # What the agent is started with: the worktree this launcher handles itself
-# rather than passing through, then whatever followed --. Built once, so the
-# attach reported by --dry-run is the attach that runs.
-ATTACH_ARGS=()
-if [[ -n "$WORKTREE" ]]; then
-  ATTACH_ARGS=(--worktree "$WORKTREE")
-fi
-ATTACH_ARGS+=(${AGENT_ARGS[@]+"${AGENT_ARGS[@]}"})
+# rather than passing through, then whatever followed --.
+build_attach_args ${AGENT_ARGS[@]+"${AGENT_ARGS[@]}"}
 
 if (( DRY_RUN )); then
   # The rest of this path talks to a live container, so there is nothing

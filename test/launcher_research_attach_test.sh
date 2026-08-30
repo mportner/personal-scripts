@@ -12,7 +12,9 @@
 # The create path is not exercised here. It clones from GitHub and creates a
 # real sandbox, which is why launcher_herdr_wiring_test.sh only runs
 # project-sandbox. Attach reaches neither, so it can be driven end to end
-# against a stub PATH.
+# against a stub PATH. The one part of create that is covered is the block of
+# commands it prints at the end, read out of the script rather than reached by
+# running it; see below.
 #
 # Sourced by test/run.sh.
 
@@ -212,3 +214,71 @@ assert_equals "" "$(count_with 9 0 running 1)" \
   "an unreadable status gives an unknown count rather than zero"
 assert_equals "" "$(count_with 'error: no such sandbox' 1)" \
   "output that is not a number is unknown rather than zero"
+
+# --- the commands the create path prints at the end --------------------------
+
+# That block is the tail of the launcher and runs only once a sandbox exists,
+# so reaching it for real would mean a clone and a create. It is read out of
+# the script and evaluated here instead, against the two values it
+# interpolates. What that buys is the wording and the alignment, which is the
+# whole point of the block: it is the only place that tells you --attach is the
+# way in, and it is read on every create.
+ready_block() {
+  local body last
+  body="$(sed -n '/^step "Ready"$/,$p' "$RESEARCH")"
+  if [[ -z "$body" ]]; then
+    fail "no Ready block found at the end of $RESEARCH"
+    return
+  fi
+  # eval runs whatever the sed caught, and the block is only the tail of the
+  # file until someone appends to it. Checked before anything is evaluated, so
+  # an appended line fails this loudly rather than being run inside a test.
+  last="$(printf '%s\n' "$body" | grep -v '^[[:space:]]*$' | tail -1)"
+  case "$last" in
+    *'research-sandbox --destroy'*) ;;
+    *)
+      fail "the Ready block is no longer the tail of $RESEARCH"
+      printf '          last line: %s\n' "$last" >&2
+      return
+      ;;
+  esac
+  (
+    NAME=research-example
+    SEED=/seed/research-example
+    unset HERDR_ENV
+    eval "$body"
+  )
+}
+
+READY="$(ready_block)"
+
+# The sections are what keep the two hand-run spellings from reading as peers
+# of the launcher, which is how "in a herdr pane" came to look like the only
+# way to attach inside herdr.
+assert_contains "$READY" '    Attach an agent' \
+  "the launcher's own forms are a section of their own"
+assert_contains "$READY" '    Attach without the launcher' \
+  "the raw sbx forms are labelled as running the attach by hand"
+
+# Aligned into a column, so the label and the command it names stay legible as
+# the block grows.
+assert_contains "$READY" '      first agent      research-sandbox --attach research-example' \
+  "--attach leads the block"
+assert_contains "$READY" '      another agent    research-sandbox --attach research-example --worktree NAME' \
+  "a second agent is told to take a worktree"
+assert_contains "$READY" '      any shell        sbx run --name research-example' \
+  "the plain sbx attach is printed ungated"
+assert_contains "$READY" '      in a herdr pane  exec -a claude sbx run --name research-example' \
+  "the herdr spelling is printed ungated too"
+
+# Two commands, run at different times. Joined with && they were one line no
+# terminal shows without wrapping.
+assert_contains "$READY" '      fetch            git -C /seed/research-example fetch sandbox-research-example' \
+  "fetching the sandbox branch is its own line"
+assert_contains "$READY" '      log              git -C /seed/research-example log sandbox-research-example/main' \
+  "reading it back is its own line"
+assert_not_contains "$READY" '&&' \
+  "no line joins two commands"
+
+assert_contains "$READY" '      destroy          research-sandbox --destroy research-example' \
+  "tearing the sandbox down is still offered"

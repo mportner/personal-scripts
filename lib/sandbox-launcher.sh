@@ -9,9 +9,10 @@
 # argument parsing, deriving the repo from a checkout's origin, owner-scoped
 # token reference resolution, the op preflight, sandbox-scoped secret staging
 # and removal, its rollback, the ruleset check, post-create token verification,
-# resolving the Claude plan name the sandbox should report, whether a sandbox
-# is running and how many agents are in it, and building the attach command,
-# including the argv0 spoof a herdr pane needs.
+# resolving the Claude plan name the sandbox should report, the --worktree flag
+# in both its spellings, whether a sandbox exists, whether it is running and how
+# many agents are in it, and building the attach command, including the argv0
+# spoof a herdr pane needs.
 #
 # These functions operate on globals their caller sets (REPO_ARG, NAME,
 # SEED, TOKEN_REF, TOKEN_REF_EXPLICIT, TOKEN_REF_SOURCE, NO_TOKEN, DRY_RUN,
@@ -552,6 +553,76 @@ check_generated_guidance() {
   fi
 }
 
+# --- the worktree flag ------------------------------------------------------
+
+# WORKTREE_NAME_REASON, read below, is the sentence explaining why the calling
+# launcher insists on a name. Left to the caller to set, and read with a :-
+# default rather than initialised here, so it does not matter whether the
+# caller sets it before or after sourcing this file.
+#
+# The rule is shared and the reason is not. project-sandbox cannot pre-create a
+# worktree it cannot name, nor isolate the node_modules of one it did not
+# pre-create; research-sandbox forwards the flag and pre-creates nothing.
+# Flattening the two messages into whichever was written first would tell one
+# launcher's user about machinery that launcher does not have.
+
+# Takes the value of --worktree into WORKTREE, or dies. Deliberately stricter
+# than `claude --worktree`, which will happily invent a name: naming it here is
+# what lets a launcher report the branch the agent lands on and warn about the
+# tree it does not share, so one it cannot name is one it can say nothing
+# about.
+#
+# WORKTREE and WORKTREE_SEEN are read by the sourcing launcher, which is not
+# something shellcheck can see when it lints this file on its own.
+# shellcheck disable=SC2034
+take_worktree() {
+  local msg
+  # -* rejected as well as empty: `--worktree --dry-run` would otherwise name a
+  # worktree after the flag that followed it and swallow that flag silently.
+  case "${1:-}" in
+    ''|-*)
+      msg="--worktree needs a name, e.g. --worktree review-fixes"
+      [[ -z "${WORKTREE_NAME_REASON:-}" ]] || msg="$msg
+$WORKTREE_NAME_REASON"
+      die "$msg"
+      ;;
+  esac
+  WORKTREE="$1"
+  WORKTREE_SEEN=1
+}
+
+# Handles both spellings of --worktree at the front of a launcher's argument
+# list. Returns 0 when $1 was one of them, having taken the name and set
+# WORKTREE_SHIFT to the number of arguments the caller should consume, and 1
+# when $1 is something else, leaving it to the caller's own case.
+#
+# A function rather than two case arms because two spellings have three call
+# sites: each launcher parses its own options, and project-sandbox parses again
+# after the `--`, since a worktree it is not told about is one it cannot
+# isolate. Three copies of a two-line pattern is how the -* rejection came to
+# be in one of them and not the others.
+#
+# WORKTREE_SHIFT is read by the sourcing launcher; see above.
+# shellcheck disable=SC2034
+take_worktree_flag() {
+  case "${1:-}" in
+    -w|--worktree)
+      # `${2:-}` rather than need_value: a value that is missing and a value
+      # that is really the next option are the same mistake, and take_worktree
+      # names the flag and gives an example where need_value can only say that
+      # something was wanted.
+      take_worktree "${2:-}"
+      WORKTREE_SHIFT=2
+      ;;
+    --worktree=*)
+      take_worktree "${1#--worktree=}"
+      WORKTREE_SHIFT=1
+      ;;
+    *) return 1 ;;
+  esac
+  return 0
+}
+
 # --- herdr ------------------------------------------------------------------
 
 # The agent a sandbox created from here runs: every launcher in bin/ builds its
@@ -595,6 +666,19 @@ SANDBOX_AGENT=claude
 # screen rules to another agent's output.
 herdr_spoofs_argv0() {
   [[ "${HERDR_ENV:-}" == 1 && "$SANDBOX_AGENT" == claude ]]
+}
+
+# Whether a sandbox named $NAME exists, running or not.
+#
+# `sbx ls -q` prints one name per line, so an exact whole-line match is enough
+# and avoids a substring hit on a longer name that contains this one.
+#
+# Existence and state are separate questions here. project-sandbox asks this
+# one to decide whether to create or attach, and research-sandbox to reject an
+# attach to a sandbox that was never there. Neither would be served by
+# sandbox_running below, which answers "stopped" with a definitive no.
+sandbox_exists() {
+  sbx ls -q 2>/dev/null | grep -qxF -- "$NAME"
 }
 
 # Whether sandbox $NAME is running. Three outcomes, because two of them answer
@@ -673,6 +757,30 @@ agent_session_count() {
     ''|*[!0-9]*) return 0 ;;
     *) printf '%s' "$n" ;;
   esac
+}
+
+# Builds ATTACH_ARGS, the list the agent is started with: the worktree the
+# launcher handles itself rather than passing through, then whatever the caller
+# passes here (project-sandbox's post-`--` arguments; research-sandbox has
+# none).
+#
+# Separate from build_attach below, which turns a list of agent arguments into
+# the sbx command line that carries it. This is where that list comes from, and
+# it is built once per run, so the attach reported by --dry-run is the attach
+# that runs.
+#
+# ATTACH_ARGS is read by the sourcing launcher, which shellcheck cannot see
+# when it lints this file on its own.
+# shellcheck disable=SC2034
+build_attach_args() {
+  ATTACH_ARGS=()
+  if [[ -n "$WORKTREE" ]]; then
+    ATTACH_ARGS=(--worktree "$WORKTREE")
+  fi
+  # No guard on an empty "$@": appending it adds nothing, on bash 3.2 too. The
+  # ${a[@]+"${a[@]}"} idiom elsewhere in this repo is for expanding an array
+  # that may be unset, which is a different thing.
+  ATTACH_ARGS+=("$@")
 }
 
 # Builds the attach into ATTACH_ARGV, and sets ATTACH_ARGV0 to the name it
