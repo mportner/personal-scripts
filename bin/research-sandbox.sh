@@ -150,23 +150,13 @@ docs/sandbox-github-access.md.
 EOF
 }
 
-# --worktree needs a name, and this is deliberately stricter than `claude`,
-# which will happily invent one. Naming it here is what lets the launcher
-# report the branch it lands on and warn about the tree it does not share, and
-# a worktree the launcher cannot name is one it cannot say anything about.
-# Kept in step with project-sandbox's flag of the same name.
-take_worktree() {
-  # -* rejected as well as empty: `--worktree --dry-run` would otherwise name a
-  # worktree after the flag that followed it and swallow that flag silently.
-  case "${1:-}" in
-    ''|-*) die \
-"--worktree needs a name, e.g. --worktree review-fixes" ;;
-  esac
-  WORKTREE="$1"
-  WORKTREE_SEEN=1
-}
-
 while (( $# > 0 )); do
+  # Both spellings of --worktree come from the launcher library, so this
+  # launcher and project-sandbox insist on the same thing in the same words. It
+  # reports through WORKTREE_SHIFT how much of "$@" it consumed. Nothing is
+  # added to WORKTREE_NAME_REASON: this launcher forwards the flag and
+  # pre-creates nothing, so there is no machinery to explain.
+  if take_worktree_flag "$@"; then shift "$WORKTREE_SHIFT"; continue; fi
   case "$1" in
     -n|--name)      need_value "$@"; NAME="$2"; shift ;;
     -r|--token-ref)
@@ -188,8 +178,6 @@ Use --no-token to create a sandbox with no GitHub access."
     -a|--attach)
       ATTACH=1
       if [[ -n "${2:-}" && "$2" != -* ]]; then NAME="$2"; shift; fi ;;
-    -w|--worktree)  need_value "$@"; take_worktree "$2"; shift ;;
-    --worktree=*)   take_worktree "${1#--worktree=}" ;;
     --destroy)      need_value "$@"; DESTROY=1; NAME="$2"; shift ;;
     -f|--force)     FORCE=1 ;;
     -y|--yes)       ASSUME_YES=1 ;;
@@ -335,10 +323,7 @@ Pass it as the REPO argument instead:
   step "Attaching to $NAME"
   note "sandbox            $NAME"
 
-  # `sbx ls -q` prints one name per line, so an exact whole-line match is
-  # enough and avoids a substring hit on a longer name containing this one.
-  # Matching project-sandbox, which decides create-or-attach the same way.
-  if ! sbx ls -q 2>/dev/null | grep -qxF -- "$NAME"; then
+  if ! sandbox_exists; then
     die \
 "no sandbox named '$NAME'.
 Create one with:      research-sandbox [REPO]
@@ -377,11 +362,10 @@ See what exists with: sbx ls"
     note "         NAME to give this one a tree of its own."
   fi
 
-  # Built once, so the attach reported by --dry-run is the attach that runs.
-  ATTACH_ARGS=()
-  if [[ -n "$WORKTREE" ]]; then
-    ATTACH_ARGS=(--worktree "$WORKTREE")
-  fi
+  # No arguments of its own to add: this launcher has no `--` of its own, so
+  # the worktree is all the agent is started with.
+  # shellcheck disable=SC2119
+  build_attach_args
 
   if (( DRY_RUN )); then
     printf '    would run: %s\n' \
