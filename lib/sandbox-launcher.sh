@@ -620,8 +620,11 @@ sandbox_running() {
   command -v jq >/dev/null 2>&1 || return 2
   # Deliberately not `|| printf ''` inside the substitution: swallowing the
   # failure there is what turns an unreadable status into a confident answer.
-  # Callers set pipefail, so a failing sbx fails the pipeline even though jq
-  # succeeds on the empty input it is handed.
+  # pipefail, which every caller happens to set, makes a failing sbx fail the
+  # pipeline outright. It is not required for correctness though: without it jq
+  # still succeeds on the empty input it is handed, and the empty status falls
+  # to the unknown branch below. Neither way can report a sandbox it could not
+  # read as stopped.
   status="$(sbx ls --json 2>/dev/null \
     | jq -r --arg n "$NAME" '.sandboxes[]? | select(.name == $n) | .status' \
       2>/dev/null)" || return 2
