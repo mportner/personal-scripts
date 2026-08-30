@@ -137,5 +137,11 @@ assert_equals "1" "$(exists_rc 'other
 assert_equals "1" "$(exists_rc 'research-example-two
 ' 0 research-example)" \
   "a longer name containing this one is not a match"
+# The name matches and sbx still failed, which is the case worth pinning: what
+# rejects it is pipefail, which the launchers and this harness both set. With
+# an empty listing this would pass whatever sbx returned, and pin nothing.
+assert_equals "1" "$(exists_rc 'research-example
+' 1 research-example)" \
+  "a name listed by a failing sbx is not an existing sandbox"
 assert_equals "1" "$(exists_rc '' 1 research-example)" \
-  "sbx failing to list is not an existing sandbox"
+  "sbx failing with nothing listed is not an existing sandbox"

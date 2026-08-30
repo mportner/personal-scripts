@@ -555,16 +555,16 @@ check_generated_guidance() {
 
 # --- the worktree flag ------------------------------------------------------
 
-# The sentence explaining why this launcher insists on a name, appended to the
-# message below. Set by the caller before its option parsing; a launcher with
-# nothing to add leaves it empty.
+# WORKTREE_NAME_REASON, read below, is the sentence explaining why the calling
+# launcher insists on a name. Left to the caller to set, and read with a :-
+# default rather than initialised here, so it does not matter whether the
+# caller sets it before or after sourcing this file.
 #
 # The rule is shared and the reason is not. project-sandbox cannot pre-create a
 # worktree it cannot name, nor isolate the node_modules of one it did not
 # pre-create; research-sandbox forwards the flag and pre-creates nothing.
 # Flattening the two messages into whichever was written first would tell one
 # launcher's user about machinery that launcher does not have.
-WORKTREE_NAME_REASON=""
 
 # Takes the value of --worktree into WORKTREE, or dies. Deliberately stricter
 # than `claude --worktree`, which will happily invent a name: naming it here is
@@ -582,7 +582,7 @@ take_worktree() {
   case "${1:-}" in
     ''|-*)
       msg="--worktree needs a name, e.g. --worktree review-fixes"
-      [[ -z "$WORKTREE_NAME_REASON" ]] || msg="$msg
+      [[ -z "${WORKTREE_NAME_REASON:-}" ]] || msg="$msg
 $WORKTREE_NAME_REASON"
       die "$msg"
       ;;
@@ -605,7 +605,7 @@ $WORKTREE_NAME_REASON"
 # WORKTREE_SHIFT is read by the sourcing launcher; see above.
 # shellcheck disable=SC2034
 take_worktree_flag() {
-  case "$1" in
+  case "${1:-}" in
     -w|--worktree)
       # `${2:-}` rather than need_value: a value that is missing and a value
       # that is really the next option are the same mistake, and take_worktree
@@ -777,9 +777,10 @@ build_attach_args() {
   if [[ -n "$WORKTREE" ]]; then
     ATTACH_ARGS=(--worktree "$WORKTREE")
   fi
-  if (( $# )); then
-    ATTACH_ARGS+=("$@")
-  fi
+  # No guard on an empty "$@": appending it adds nothing, on bash 3.2 too. The
+  # ${a[@]+"${a[@]}"} idiom elsewhere in this repo is for expanding an array
+  # that may be unset, which is a different thing.
+  ATTACH_ARGS+=("$@")
 }
 
 # Builds the attach into ATTACH_ARGV, and sets ATTACH_ARGV0 to the name it

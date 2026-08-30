@@ -224,12 +224,24 @@ assert_equals "" "$(count_with 'error: no such sandbox' 1)" \
 # whole point of the block: it is the only place that tells you --attach is the
 # way in, and it is read on every create.
 ready_block() {
-  local body
+  local body last
   body="$(sed -n '/^step "Ready"$/,$p' "$RESEARCH")"
   if [[ -z "$body" ]]; then
     fail "no Ready block found at the end of $RESEARCH"
     return
   fi
+  # eval runs whatever the sed caught, and the block is only the tail of the
+  # file until someone appends to it. Checked before anything is evaluated, so
+  # an appended line fails this loudly rather than being run inside a test.
+  last="$(printf '%s\n' "$body" | grep -v '^[[:space:]]*$' | tail -1)"
+  case "$last" in
+    *'research-sandbox --destroy'*) ;;
+    *)
+      fail "the Ready block is no longer the tail of $RESEARCH"
+      printf '          last line: %s\n' "$last" >&2
+      return
+      ;;
+  esac
   (
     NAME=research-example
     SEED=/seed/research-example
