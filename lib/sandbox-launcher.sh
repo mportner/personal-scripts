@@ -9,8 +9,9 @@
 # argument parsing, deriving the repo from a checkout's origin, owner-scoped
 # token reference resolution, the op preflight, sandbox-scoped secret staging
 # and removal, its rollback, the ruleset check, post-create token verification,
-# resolving the Claude plan name the sandbox should report, and building the
-# attach command, including the argv0 spoof a herdr pane needs.
+# resolving the Claude plan name the sandbox should report, whether a sandbox
+# is running and how many agents are in it, and building the attach command,
+# including the argv0 spoof a herdr pane needs.
 #
 # These functions operate on globals their caller sets (REPO_ARG, NAME,
 # SEED, TOKEN_REF, TOKEN_REF_EXPLICIT, TOKEN_REF_SOURCE, NO_TOKEN, DRY_RUN,
@@ -594,6 +595,57 @@ SANDBOX_AGENT=claude
 # screen rules to another agent's output.
 herdr_spoofs_argv0() {
   [[ "${HERDR_ENV:-}" == 1 && "$SANDBOX_AGENT" == claude ]]
+}
+
+# Whether sandbox $NAME is running, as opposed to existing but stopped.
+#
+# Asked before the agent count below, and the only reason that count is safe to
+# take: `sbx exec` starts a stopped sandbox before running anything in it, and
+# a --dry-run that boots a container is not a dry run. A stopped sandbox has no
+# agents running in it either way, so nothing is lost by not asking.
+#
+# jq is needed only here, and is handled the way check_ruleset handles it:
+# without jq the status cannot be read and the sandbox is reported as not
+# running, which costs the advisory count and never starts anything by
+# surprise. A `sbx ls` table parse would avoid the dependency, but the columns
+# are a display format and the JSON is the interface.
+sandbox_running() {
+  local status
+  command -v jq >/dev/null 2>&1 || return 1
+  status="$(sbx ls --json 2>/dev/null \
+    | jq -r --arg n "$NAME" '.sandboxes[]? | select(.name == $n) | .status' \
+      2>/dev/null || printf '')"
+  [[ "$status" == running ]]
+}
+
+# How many agent processes are alive in sandbox $NAME, as a number, or empty
+# when that could not be determined. Empty is not zero: the caller has to tell
+# "nobody else is here" from "could not tell", because they lead to opposite
+# advice. Named a count rather than a predicate so it is not mistaken for one
+# next to sandbox_running above.
+#
+# `sbx run` starts a new agent every time rather than returning to one already
+# there, and an agent outlives the pane it was opened in: closing the terminal
+# detaches it but leaves it running, with nothing on the host to show for it.
+# So this count is the only way an attach can tell the caller it is about to
+# put a second agent into a workspace another one is already editing.
+#
+# Anything that is not a number reads as none, which covers both ways this
+# legitimately fails: pgrep prints 0 and exits non-zero when nothing matches,
+# and sbx itself fails when the sandbox is gone. Neither is worth aborting an
+# attach over, since the attach that follows reports the real error.
+agent_session_count() {
+  local n
+  # Asked before sandbox_running, which cannot answer without jq either and
+  # would report a running sandbox as stopped, turning "could not tell" into a
+  # confident zero.
+  command -v jq >/dev/null 2>&1 || return 0
+  sandbox_running || { printf '0'; return 0; }
+  n="$(sbx exec "$NAME" pgrep -xc "$SANDBOX_AGENT" 2>/dev/null)" || n=""
+  case "$n" in
+    ''|*[!0-9]*) n=0 ;;
+  esac
+  printf '%s' "$n"
 }
 
 # Builds the attach into ATTACH_ARGV, and sets ATTACH_ARGV0 to the name it
