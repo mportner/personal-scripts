@@ -9,8 +9,9 @@
 # argument parsing, deriving the repo from a checkout's origin, owner-scoped
 # token reference resolution, the op preflight, sandbox-scoped secret staging
 # and removal, its rollback, the ruleset check, post-create token verification,
-# resolving the Claude plan name the sandbox should report, and building the
-# attach command, including the argv0 spoof a herdr pane needs.
+# resolving the Claude plan name the sandbox should report, whether a sandbox
+# is running and how many agents are in it, and building the attach command,
+# including the argv0 spoof a herdr pane needs.
 #
 # These functions operate on globals their caller sets (REPO_ARG, NAME,
 # SEED, TOKEN_REF, TOKEN_REF_EXPLICIT, TOKEN_REF_SOURCE, NO_TOKEN, DRY_RUN,
@@ -594,6 +595,84 @@ SANDBOX_AGENT=claude
 # screen rules to another agent's output.
 herdr_spoofs_argv0() {
   [[ "${HERDR_ENV:-}" == 1 && "$SANDBOX_AGENT" == claude ]]
+}
+
+# Whether sandbox $NAME is running. Three outcomes, because two of them answer
+# different questions:
+#
+#   0  running
+#   1  not running, definitively: sbx answered and the status was not "running"
+#   2  could not tell: jq is missing, sbx failed, or the sandbox was not listed
+#
+# The 1-versus-2 split is the point. A definitive "not running" means there are
+# no agents in there and nothing for the caller to warn about. A status that
+# could not be read means the opposite is still possible, and reporting it as
+# "no agents" would silence exactly the warning the count exists to raise.
+#
+# Asked before the agent count below, and the only reason that count is safe to
+# take: `sbx exec` starts a stopped sandbox before running anything in it, and
+# a --dry-run that boots a container is not a dry run.
+#
+# A `sbx ls` table parse would avoid the jq dependency, but the columns are a
+# display format and the JSON is the interface.
+sandbox_running() {
+  local status
+  command -v jq >/dev/null 2>&1 || return 2
+  # Deliberately not `|| printf ''` inside the substitution: swallowing the
+  # failure there is what turns an unreadable status into a confident answer.
+  # pipefail, which every caller happens to set, makes a failing sbx fail the
+  # pipeline outright. It is not required for correctness though: without it jq
+  # still succeeds on the empty input it is handed, and the empty status falls
+  # to the unknown branch below. Neither way can report a sandbox it could not
+  # read as stopped.
+  status="$(sbx ls --json 2>/dev/null \
+    | jq -r --arg n "$NAME" '.sandboxes[]? | select(.name == $n) | .status' \
+      2>/dev/null)" || return 2
+  case "$status" in
+    running) return 0 ;;
+    '')      return 2 ;;
+    *)       return 1 ;;
+  esac
+}
+
+# How many agent processes are alive in sandbox $NAME, as a number, or empty
+# when that could not be determined. Empty is not zero: the caller has to tell
+# "nobody else is here" from "could not tell", because they lead to opposite
+# advice. Named a count rather than a predicate so it is not mistaken for one
+# next to sandbox_running above.
+#
+# `sbx run` starts a new agent every time rather than returning to one already
+# there, and an agent outlives the pane it was opened in: closing the terminal
+# detaches it but leaves it running, with nothing on the host to show for it.
+# So this count is the only way an attach can tell the caller it is about to
+# put a second agent into a workspace another one is already editing.
+#
+# Anything that is not a number reads as none, which covers both ways this
+# legitimately fails: pgrep prints 0 and exits non-zero when nothing matches,
+# and sbx itself fails when the sandbox is gone. Neither is worth aborting an
+# attach over, since the attach that follows reports the real error.
+agent_session_count() {
+  local n rc=0
+  # `|| rc=$?` keeps this a condition context, so a non-zero return here does
+  # not trip the caller's set -e.
+  sandbox_running || rc=$?
+  case "$rc" in
+    0) ;;                       # running: worth asking
+    1) printf '0'; return 0 ;;  # definitively stopped: no agents, and no boot
+    *) return 0 ;;              # could not tell: say so by saying nothing
+  esac
+  # `|| true` rather than `|| n=""`: pgrep exits 1 when nothing matches, having
+  # already printed a perfectly good 0, and discarding that would report a
+  # known zero as unknown. The substitution assigns whatever was printed
+  # regardless of the status, so the output survives and only set -e is
+  # appeased.
+  n="$(sbx exec "$NAME" pgrep -xc "$SANDBOX_AGENT" 2>/dev/null)" || true
+  case "$n" in
+    # Nothing, or not a number: sbx could not run pgrep at all, which is the
+    # same "could not tell" as an unreadable status and not a zero.
+    ''|*[!0-9]*) return 0 ;;
+    *) printf '%s' "$n" ;;
+  esac
 }
 
 # Builds the attach into ATTACH_ARGV, and sets ATTACH_ARGV0 to the name it

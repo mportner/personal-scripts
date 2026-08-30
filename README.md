@@ -150,6 +150,8 @@ at GitHub and differing in what it is allowed to touch.
 ```bash
 research-sandbox owner/repo     # a throwaway clone, open egress
 research-sandbox                # same, reading owner/repo from the cwd's origin
+research-sandbox --attach       # opens an agent in it, named from the cwd's origin
+research-sandbox --attach research-league-service --worktree docs
 
 cd ~/projects/league-service
 project-sandbox                 # bind-mounts this checkout; creates and exits
@@ -192,9 +194,30 @@ show you those) and warns on a dirty tree, since `claude --worktree` branches
 from HEAD. It asks about both on create, and on attach only when the answers
 have changed.
 
-`--worktree NAME` is handled by the launcher rather than passed through to
-`claude`, because a worktree it does not know about is one whose `node_modules`
-it cannot isolate from the host's.
+In `project-sandbox`, `--worktree NAME` is handled by the launcher rather than
+passed through to `claude`, because a worktree it does not know about is one
+whose `node_modules` it cannot isolate from the host's. `research-sandbox`
+forwards the flag instead: its workspace is a clone on a container volume, where
+that isolation is inert and there is no host tree to pre-create in.
+
+#### Running more than one agent in a sandbox
+
+Every attach starts a **new** agent. Neither launcher, and neither `sbx run
+--name` underneath them, returns you to an agent already running; each one adds
+another to the same container. That is how you get two agents working in
+parallel, and it has two consequences worth knowing.
+
+They share a working tree unless you say otherwise, so two agents on the same
+branch will overwrite each other. Give each one its own with `--worktree`, which
+lands it in `.claude/worktrees/NAME` on branch `worktree-NAME`. `research-sandbox
+--attach` reports how many agents are already in the sandbox and warns when a
+new one would be joining them in the same tree.
+
+An agent also **outlives the pane it was opened in**. Closing the terminal
+detaches it and leaves it running inside the container, where nothing on the
+host shows it exists, and there is no way to get back to it. The agent count on
+attach is what surfaces them; `sbx exec <name> pgrep -x claude` lists the
+process ids, and `sbx exec <name> kill <pid>` clears one out.
 
 In a herdr pane the attach runs under argv0 `claude`. `project-sandbox` execs
 it that way itself; `research-sandbox` prints both spellings at the end, since
