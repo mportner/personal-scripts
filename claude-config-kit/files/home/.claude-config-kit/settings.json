@@ -3,6 +3,7 @@
   "syntaxHighlightingDisabled": false,
   "effortLevel": "high",
   "autoCompactEnabled": false,
+  "remoteControlAtStartup": false,
   "env": {
     "CLAUDE_CODE_SUPPRESS_SESSION_ATTRIBUTION": "1"
   },

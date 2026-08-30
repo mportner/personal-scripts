@@ -33,6 +33,7 @@ Settings merged in:
   "syntaxHighlightingDisabled": false,
   "effortLevel": "high",
   "autoCompactEnabled": false,
+  "remoteControlAtStartup": false,
   "env": { "CLAUDE_CODE_SUPPRESS_SESSION_ATTRIBUTION": "1" },
   "attribution": { "commit": "", "pr": "" },
   "enabledPlugins": {
@@ -47,6 +48,13 @@ Settings merged in:
 These are a **fixed snapshot** of the host `~/.claude/settings.json`, not a live
 mirror. Edit `files/home/.claude-config-kit/settings.json` to change them, then
 recreate any sandbox that should pick the change up.
+
+`remoteControlAtStartup` is the one key here that is not just a copy of a host
+preference. Left unset, a sandbox session starts the Remote Control bridge by
+itself; `false` makes it behave like a fresh host session, where `/rc` opts in
+on demand. It has to be set at user scope, which is where this fragment is
+merged: project- and local-scoped settings can only turn Remote Control off,
+never on, so the repo's own `.claude/settings.json` is not a place this works.
 
 > Note that `mportner/agentpowers` is a private repository, so for anyone else
 > the `devpowers@agentpowers` plugin will not resolve. Drop the `enabledPlugins`
