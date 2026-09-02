@@ -9,10 +9,11 @@
 # argument parsing, deriving the repo from a checkout's origin, owner-scoped
 # token reference resolution, the op preflight, sandbox-scoped secret staging
 # and removal, its rollback, the ruleset check, post-create token verification,
-# resolving the Claude plan name the sandbox should report, the --worktree flag
-# in both its spellings, whether a sandbox exists, whether it is running and how
-# many agents are in it, and building the attach command, including the argv0
-# spoof a herdr pane needs.
+# resolving the Claude plan name the sandbox should report, carrying the host's
+# global git excludes into the container, the --worktree flag in both its
+# spellings, whether a sandbox exists, whether it is running and how many agents
+# are in it, and building the attach command, including the argv0 spoof a herdr
+# pane needs.
 #
 # These functions operate on globals their caller sets (REPO_ARG, NAME,
 # SEED, TOKEN_REF, TOKEN_REF_EXPLICIT, TOKEN_REF_SOURCE, NO_TOKEN, DRY_RUN,
@@ -551,6 +552,198 @@ check_generated_guidance() {
     printf '             claude-config-kit/files/home/.claude-config-kit/\n' >&2
     printf '             trim-sandbox-guidance.sh\n' >&2
   fi
+}
+
+# --- the host's global git excludes -----------------------------------------
+
+# The markers wrapped around the block carried below. A wire format between
+# this and the container script in carry_host_excludes: the container strips
+# everything between them before appending, which is what lets attach rewrite
+# its block instead of stacking a second one on top.
+EXCLUDES_BEGIN='# >>> personal-scripts: host global git excludes >>>'
+EXCLUDES_END='# <<< personal-scripts: host global git excludes <<<'
+
+# The global excludes file git actually reads on this host, or nothing.
+#
+# Asked for as a path rather than a plain string so that git expands a leading
+# tilde itself. The value is written that way far more often than not, and a
+# literal "~/.gitignore_global" handed to the container names a path that does
+# not exist there.
+#
+# The XDG fallback is not a guess: git reads that file whenever
+# core.excludesFile is unset, so a user who never set it can still have global
+# patterns, and they would be exactly the ones this missed. A configured file
+# that is absent gets no fallback, because git is not reading anything either
+# and the sandbox already matches the host.
+# Unqualified rather than --global: a core.excludesFile set in /etc/gitconfig
+# is just as invisible in the container, and --global would resolve it to
+# nothing, fall through to the XDG default and carry the wrong file, or none,
+# without saying so. This asks the same question git answers for itself.
+host_excludes_file() {
+  local path
+  # Assigned in two steps: `local path=$(...)` would take local's own status
+  # and hide the failure that means the setting is unset.
+  path="$(git config --get --type=path core.excludesFile 2>/dev/null)" || path=""
+  [[ -n "$path" ]] || path="${XDG_CONFIG_HOME:-$HOME/.config}/git/ignore"
+  # -f rather than -e, so a directory at the path is not mistaken for a file to
+  # read, and the carry never ships a read error as if it were patterns.
+  [[ -f "$path" && -r "$path" ]] || return 0
+  printf '%s' "$path"
+}
+
+# The block as it will appear in the container's excludes file: the host's
+# patterns between the two markers.
+#
+# The trailing newline is produced rather than assumed. A file whose last line
+# arrives without one is ordinary, and appending the end marker straight onto
+# it would both lose that pattern and leave a block whose end the container
+# cannot find, so the next run would append rather than replace.
+excludes_block() {
+  # $1 the host file to wrap
+  printf '%s\n' "$EXCLUDES_BEGIN"
+  # awk rather than cat: it terminates every record with a newline, including a
+  # last one that had none.
+  awk '{ print }' "$1"
+  printf '%s\n' "$EXCLUDES_END"
+}
+
+# The script the container runs, kept addressable rather than inlined so it can
+# be tested without a container. The strip-and-append below is what makes an
+# attach rewrite its own block instead of stacking a second one, and a test that
+# stubs sbx would leave exactly that untested.
+#
+# Reads PS_EXCLUDES_BLOCK (base64), PS_EXCLUDES_BEGIN and PS_EXCLUDES_END from
+# the environment. POSIX sh, because the container's /bin/sh is not bash.
+#
+# --global here, unlike host_excludes_file above, and the asymmetry is
+# deliberate rather than a copy that drifted. That one asks what git reads on
+# the host, so it must see every scope. This one picks where to WRITE, and an
+# unqualified resolution could answer with a repo-local excludesFile, which in
+# a bind-mounted checkout means writing the user's patterns into their own
+# repository.
+#
+# Nothing carries .git/info/exclude, and nothing needs to: it lives inside the
+# .git directory, which project-sandbox bind-mounts whole, so the container's
+# git already reads the same file. A research sandbox clones instead, and git
+# clone does not copy info/exclude, but that is a fresh clone with no local
+# exclusions to lose.
+# Single-quoted on purpose: every expansion in here belongs to the container's
+# shell, not this one. PS_EXCLUDES_* arrive in its environment, and $HOME, $$
+# and the command substitutions all have to be resolved there.
+# shellcheck disable=SC2016
+EXCLUDES_INSTALL_SH='
+set -e
+dest="$(git config --global --get --type=path core.excludesFile 2>/dev/null || true)"
+# The XDG default rather than giving up, so this still works if sbx stops
+# setting the option: that is the file git would read instead.
+[ -n "$dest" ] || dest="${XDG_CONFIG_HOME:-$HOME/.config}/git/ignore"
+mkdir -p "$(dirname "$dest")"
+[ -f "$dest" ] || : > "$dest"
+
+tmp="$dest.personal-scripts.$$"
+# Removed on every path. Without it a failed decode strands the temp file beside
+# the excludes file, where it is untracked clutter of the exact kind this whole
+# function exists to stop.
+trap "rm -f \"$tmp\"" EXIT
+
+# Everything except a block a previous run left, then the current block. A
+# plain shell loop rather than awk or sed, because the markers would have to be
+# quoted through another layer to reach either, and the file is a few lines.
+# The `|| [ -n "$line" ]` is what keeps a final line that has no newline.
+skip=0
+while IFS= read -r line || [ -n "$line" ]; do
+  if [ "$line" = "$PS_EXCLUDES_BEGIN" ]; then skip=1; continue; fi
+  if [ "$line" = "$PS_EXCLUDES_END" ]; then skip=0; continue; fi
+  if [ "$skip" = 0 ]; then printf "%s\n" "$line"; fi
+done < "$dest" > "$tmp"
+
+printf %s "$PS_EXCLUDES_BLOCK" | base64 -d >> "$tmp"
+# Same directory, so this is a rename rather than a copy: git never reads a
+# half-written excludes file.
+mv "$tmp" "$dest"
+'
+
+# Why a carry did not land, and what it costs. Never silent: the point of the
+# whole function is that a checkout reading as dirty has an explanation, so a
+# failure that says nothing would be the worst outcome available.
+excludes_warning() {
+  # $1 the host file, $2 what went wrong, empty if there is nothing to add
+  printf '    WARNING  could not carry the host git excludes into the sandbox.\n' >&2
+  printf '             Anything %s hides will read as\n' "$1" >&2
+  printf '             untracked in there, which also makes the preflight\n' >&2
+  printf '             report a clean checkout as dirty.\n' >&2
+  if [[ -n "$2" ]]; then
+    printf '               %s\n' "$2" >&2
+  fi
+}
+
+# Carries the host's global excludes into the sandbox, so a checkout that is
+# clean here reads as clean there.
+#
+# sbx points core.excludesFile at a file of its own inside the container which
+# holds its own entry and nothing else, so every pattern the user ignores
+# globally rather than in a committed .gitignore stops applying and the files
+# it was hiding surface as untracked. That is worse than untidy: scan_findings
+# keys its "dirty" finding off git status being non-empty, so a clean
+# repository starts warning that uncommitted changes will not reach a
+# `claude --worktree` branch, and a preflight that cries wolf stops being read.
+#
+# Run after create and again at attach. The second is not redundant: the host's
+# file changes, and a sandbox created before this existed has no block at all.
+#
+# Never fails the caller. The sandbox is fine and worth keeping when only this
+# does not land, and both launchers run under set -e.
+carry_host_excludes() {
+  local src block err
+  src="$(host_excludes_file)"
+  # Silent, and not a note saying there was nothing to do. Most machines
+  # running this have no global excludes file at all, and this runs at every
+  # attach as well as at creation, so a line here would be pure recurring noise
+  # about a non-event.
+  [[ -n "$src" ]] || return 0
+
+  # Printed here rather than by the callers so it appears only when there is
+  # something to report, which is what keeps the silence above silent.
+  printf '\n'
+  step "Carrying the host's git excludes"
+
+  # Not routed through run(), which can neither capture the block nor express
+  # the pipeline that builds it, so --dry-run is honoured here instead.
+  if (( DRY_RUN )); then
+    note "excludes  would carry $src"
+    return 0
+  fi
+
+  # base64 rather than the text itself: a gitignore is made of the characters a
+  # shell acts on, and this crosses a host shell, an argument parser and a
+  # container shell to get where it is going. macOS wraps its output and GNU
+  # does not, so the newlines come out either way.
+  #
+  # Guarded because this function promises never to fail its caller. Both
+  # launchers run under `set -euo pipefail`, so a file that became unreadable
+  # between host_excludes_file's test and this read would otherwise take the
+  # launcher down after the sandbox had already been created.
+  if ! block="$(excludes_block "$src" | base64 | tr -d '\n')"; then
+    excludes_warning "$src" "could not read $src"
+    return 0
+  fi
+
+  # The markers travel as environment variables so they are spelled once, here,
+  # rather than once on each side of the container boundary.
+  #
+  # Only stderr is captured: 2>&1 >/dev/null sends it to the substitution and
+  # sends stdout to the void, in that order. Discarding it instead would leave
+  # the warning below unable to say why anything failed.
+  if err="$(sbx exec \
+              -e "PS_EXCLUDES_BLOCK=$block" \
+              -e "PS_EXCLUDES_BEGIN=$EXCLUDES_BEGIN" \
+              -e "PS_EXCLUDES_END=$EXCLUDES_END" \
+              "$NAME" -- sh -c "$EXCLUDES_INSTALL_SH" 2>&1 >/dev/null)"; then
+    note "excludes  carried $src, so what is ignored here is ignored there"
+  else
+    excludes_warning "$src" "$err"
+  fi
+  return 0
 }
 
 # --- the worktree flag ------------------------------------------------------

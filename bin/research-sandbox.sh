@@ -373,6 +373,11 @@ See what exists with: sbx ls"
     exit 0
   fi
 
+  # Again at every attach, for the same reason project-sandbox does it: the
+  # host's excludes file is edited over time, and a sandbox created before this
+  # existed carries no block at all.
+  carry_host_excludes
+
   exec_attach ${ATTACH_ARGS[@]+"${ATTACH_ARGS[@]}"}
 fi
 
@@ -504,6 +509,8 @@ verify_token_access
 printf '\n'
 step "Checking the generated instructions"
 check_generated_guidance
+
+carry_host_excludes
 
 printf '\n'
 step "Ready"
