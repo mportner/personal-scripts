@@ -188,6 +188,15 @@ account record (`~/.claude.json`), so there is nothing to configure; set
 [`claude-config-kit`](claude-config-kit/README.md) for what the sandbox does
 with it.
 
+Both also carry the host's global git excludes in. sbx points
+`core.excludesFile` at a file of its own inside the container, so anything you
+ignore globally rather than in a committed `.gitignore` (a `.DS_Store`, a
+`.claude/settings.local.json`) stops being ignored in there, and a checkout
+that is clean here reads as dirty. The launchers append your patterns to the
+container's file under a marked block, on create and again at every attach, so
+edits to the host file are picked up and the block is rewritten rather than
+stacked. Nothing happens if you have no global excludes file.
+
 `project-sandbox` also checks what the checkout is about to hand over. It scans
 for gitignored files that look like credentials (`git status` alone will not
 show you those) and warns on a dirty tree, since `claude --worktree` branches

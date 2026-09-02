@@ -666,6 +666,8 @@ if [[ "$MODE" == create ]]; then
   step "Checking the generated instructions"
   check_generated_guidance
 
+  carry_host_excludes
+
   mkdir -p "$STATE_ROOT"
   printf '%s\n' "$FINDINGS" > "$STATE_FILE"
 
@@ -785,6 +787,12 @@ fi
 
 mkdir -p "$STATE_ROOT"
 printf '%s\n' "$FINDINGS" > "$STATE_FILE"
+
+# Again at every attach, not only at creation. The host's global excludes file
+# is edited over time, and a sandbox created before this existed carries no
+# block at all, so attach is what brings both up to date. Rewriting its own
+# block rather than appending is what makes running it every time safe.
+carry_host_excludes
 
 printf '\n'
 step "Attaching"
