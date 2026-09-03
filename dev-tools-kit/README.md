@@ -131,7 +131,7 @@ self-download is not subject to the window. 11.22.0 was published 2026-08-15,
 comfortably outside it; 11.24.0 was three days old at the time of writing and
 would have violated it.
 
-## node_modules isolation
+## Keeping pnpm off the workspace mount
 
 The workspace is bind-mounted from the host, so a sandbox used to see the
 host's macOS `node_modules`:
@@ -146,32 +146,66 @@ virtiofs and wrote the result back onto the host, corrupting it in both
 directions. That is where the `ERR_MODULE_NOT_FOUND`, `prebuild-install` and
 symlink churn in the old transcripts came from.
 
-A startup command gives each `node_modules` a private directory on the
-container's writable layer instead. It derives the paths at runtime from
-`$WORKSPACE_DIR`, so **one kit covers every project** rather than needing a
-per-project variant:
+The kit declares a sized volume and points pnpm at it:
 
-```
-$ findmnt | grep node_modules
-/Users/mike/Repos/league-service/node_modules                       overlay
-/Users/mike/Repos/league-service/packages/league-api/node_modules   overlay
-  ... 6 packages, 4 .claude/worktrees, and .pnpm-store              overlay
+```yaml
+volumes:
+  - path: /var/lib/pnpm
+    size: 10g
 ```
 
-`.pnpm-store` is in that list for a second reason: pnpm hardlinks out of the
-store into `node_modules`, which only works within one filesystem. Leaving the
-store on virtiofs while `node_modules` moved to the overlay turned every
-package into a full copy, which is both slow and what exhausted the disk on the
-first attempt.
+```
+PNPM_CONFIG_STORE_DIR=/var/lib/pnpm/store
+PNPM_CONFIG_VIRTUAL_STORE_TYPE=global
+```
 
-The backing store is a plain directory, not a kit volume, because
-`volumes[].path` takes no size and sbx gives one 488M, which `ENOSPC`s partway
-through a real install. The overlay has ~18G, and its lifecycle is the one we
-want anyway: it survives stop/start and dies with `sbx rm`.
+Both settings are needed. The store on its own is not enough: left at its
+default the virtual store stays at `<project>/node_modules/.pnpm`, on the
+workspace mount, and pnpm cannot hardlink from a store on a different
+filesystem, so it copies every package instead. `virtualStoreType: global`
+(pnpm 11.23+) puts the virtual store inside the store, so the two are on one
+filesystem by construction and packages are symlinked straight out of it.
 
-Clone-mode sandboxes are skipped automatically. The loop only acts on
-directories whose filesystem is `virtiofs`, and a `--clone` workspace is already
-on a container volume.
+What is left in the workspace is the symlink farm and pnpm's own metadata.
+Measured on a one-dependency project:
+
+```
+in-tree node_modules:   9 entries
+store:                291 files
+```
+
+Note the prefix. pnpm 11 reads `pnpm_config_*` and `PNPM_CONFIG_*`; the older
+`npm_config_*` spelling is ignored for these settings and says nothing about
+it. Verified against pnpm 11.24.0, where `npm_config_store_dir` left
+`pnpm store path` at its default.
+
+### What this replaced
+
+A startup command used to walk `$WORKSPACE_DIR` and bind-mount a private
+directory over every `node_modules` it found or expected, with a second copy of
+the same logic in `project-sandbox` for worktrees. It is gone, and so is the
+`isolate_worktree_node_modules` function.
+
+It had three problems, all of which the volume avoids rather than fixes:
+
+- **It needed root and `mount --bind`,** and every failure was swallowed. The
+  startup command must exit 0 or it takes the other kits down with it, so the
+  mounts end `2>/dev/null || true`. A sandbox with no isolation at all looked
+  exactly like a working one.
+- **It could not cover a worktree created mid-session.** A startup command sees
+  the workspace as it stood at container start, which is why the launcher
+  needed its own copy, and why a worktree `claude` created for itself got
+  nothing.
+- **The backing directory was on the container overlay,** because a comment
+  here recorded that `volumes[].path` takes no size and sbx gives one 488M.
+  That is no longer true: spec v2 defines `size`, and sbx 0.39.0 gives a kit
+  asking for `10g` a 9.8G ext4 filesystem.
+
+Volumes survive stop/start and are dropped by `sbx rm`, which is the same
+lifecycle the overlay directory had.
+
+Clone-mode sandboxes need nothing special. There is no workspace mount to keep
+pnpm off, and pointing the store at a volume is right either way.
 
 ### What this changes for you
 
@@ -184,7 +218,9 @@ The host `node_modules` is invisible inside the sandbox, so a fresh
 | `pnpm typecheck` | 2.2s, 5/5 tasks | passes |
 | `pnpm test` | | 194/194 passing |
 
-Host tree afterwards: 7 darwin packages, 0 linux, lockfile unchanged.
+A project pinning a pnpm older than 11.23 through `packageManager` does not get
+`virtualStoreType`, so its virtual store stays in the tree. Bumping the pin is
+the fix.
 
 ## Cost
 

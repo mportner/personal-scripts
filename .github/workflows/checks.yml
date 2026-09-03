@@ -75,11 +75,15 @@ jobs:
           sudo apt-get install -y python3-yaml
           python3 - <<'PY'
           import yaml
-          spec = yaml.safe_load(open("claude-config-kit/spec.yaml"))
-          for i, entry in enumerate(spec["setup"]["startup"]):
-              cmd = entry["command"]
-              assert cmd[:2] == ["sh", "-c"], f"unexpected startup form: {cmd[:2]}"
-              open(f"startup-extracted-{i}.sh", "w").write(cmd[2])
+          # Both kits, not just claude-config: dev-tools' startup command runs
+          # under the same "must exit 0 or it takes the chain down" rule, so a
+          # syntax error in it is equally invisible at runtime.
+          for kit in ("claude-config-kit", "dev-tools-kit"):
+              spec = yaml.safe_load(open(f"{kit}/spec.yaml"))
+              for i, entry in enumerate(spec["setup"]["startup"]):
+                  cmd = entry["command"]
+                  assert cmd[:2] == ["sh", "-c"], f"unexpected startup form: {cmd[:2]}"
+                  open(f"startup-extracted-{kit}-{i}.sh", "w").write(cmd[2])
           PY
           shellcheck -s sh startup-extracted-*.sh
 
