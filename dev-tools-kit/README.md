@@ -37,7 +37,7 @@ twelve minutes, before any work started. A second session spent 8 of 18.
 
 | | Version | Source | Verified by |
 | --- | --- | --- | --- |
-| mise | 2026.9.1 | github.com release | `SHASUMS256.txt` |
+| mise | 2026.8.14 | github.com release | `SHASUMS256.txt` |
 | Node | 24.20.0 | mise `core:node` → nodejs.org | `SHASUMS256.txt` |
 | npm | bundled with Node | (as above) | (as above) |
 | pnpm | 11.24.0 baseline, per project thereafter | mise `aqua:pnpm/pnpm` → github.com release | aqua registry |

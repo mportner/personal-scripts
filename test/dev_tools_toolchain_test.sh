@@ -97,17 +97,43 @@ assert_contains "$mise_conf" 'idiomatic_version_file_enable_tools = ["pnpm"]' \
 assert_contains "$mise_conf" 'pnpm = ' "declares a baseline pnpm for outside a project"
 assert_contains "$mise_conf" 'node = ' "declares a baseline node"
 
-# The baseline has to clear 11.23, the release that added virtualStoreType.
-# Below it the setting above is ignored and the virtual store stays in the tree.
+# The baseline has to be at least 11.23, the release that added
+# virtualStoreType. Below it the setting above is ignored and the virtual store
+# stays in the tree, on the workspace mount, while the store has already moved
+# to the volume: pnpm then cannot hardlink between them and copies instead.
+#
+# Compared as major-then-minor rather than pinned to major 11, so a future
+# pnpm 12 baseline reads as newer than 11.23 instead of failing this. Both
+# components are checked for digits first, because `-lt` on a non-numeric
+# string aborts with "integer expression expected" rather than failing the
+# assertion this file is here to make.
 baseline="$(printf '%s\n' "$mise_conf" | sed -n 's/^pnpm = "\([^"]*\)".*/\1/p')"
-baseline_minor="$(printf '%s\n' "$baseline" | cut -d. -f2)"
-if [[ "$(printf '%s\n' "$baseline" | cut -d. -f1)" != 11 || "$baseline_minor" -lt 23 ]]; then
-  fail "baseline pnpm $baseline predates virtualStoreType (needs 11.23+)"
-fi
+baseline_major="${baseline%%.*}"
+baseline_rest="${baseline#*.}"
+baseline_minor="${baseline_rest%%.*}"
+case "$baseline_major:$baseline_minor" in
+  *[!0-9:]* | :* | *: )
+    fail "baseline pnpm '$baseline' is not a version this test can compare"
+    ;;
+  *)
+    if [[ "$baseline_major" -lt 11 ]] ||
+       { [[ "$baseline_major" -eq 11 ]] && [[ "$baseline_minor" -lt 23 ]]; }; then
+      fail "baseline pnpm $baseline predates virtualStoreType (needs 11.23+)"
+    fi
+    ;;
+esac
 
 # mise is pinned and checksum-verified like every other direct download here.
 assert_contains "$spec" 'MISE_VERSION=' "pins the mise version"
 assert_contains "$spec" 'SHASUMS256.txt' "verifies mise against its published manifest"
+
+# The kit README tabulates the same version, and the two drifted apart once
+# already: the pin moved to clear the release-age window and the table kept
+# advertising the version it replaced, which is exactly the kind of mismatch
+# someone debugging the toolchain would trust.
+spec_mise="$(printf '%s\n' "$spec" | sed -n 's/^ *MISE_VERSION=v\([^ ]*\).*/\1/p')"
+readme_mise="$(sed -n 's/^| mise | \([^ |]*\) .*/\1/p' "$REPO_DIR/dev-tools-kit/README.md")"
+assert_equals "$spec_mise" "$readme_mise" "kit README tabulates the pinned mise version"
 
 # The hand-rolled installs it replaced. Either one coming back would put a
 # second, unverified pnpm on PATH alongside the mise shim.
