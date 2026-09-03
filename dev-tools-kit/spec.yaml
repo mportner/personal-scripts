@@ -233,6 +233,41 @@ setup:
         soft apt-get install -y --no-install-recommends \
           xz-utils wget file tree unzip shellcheck
 
+        # --- a C toolchain for native modules ---------------------------
+        # The image has make and python3 but no compiler at all, so anything
+        # node-gyp has to build from source dies at `make: cc: No such file or
+        # directory`. league-service hits this through sqlite3, which publishes
+        # no prebuilt for this platform and which its pnpm-workspace.yaml
+        # explicitly allows to build; the symptom is 14 tests failing with
+        # `Could not locate the bindings file ... node_sqlite3.node`, several
+        # hundred tests into a run, which reads like a broken install rather
+        # than a missing toolchain.
+        #
+        # The narrow set rather than build-essential, which additionally pulls
+        # dpkg-dev for Debian packaging that node-gyp never calls. make and
+        # coreutils are already here. python3-dev and pkg-config are in because
+        # most other node-gyp packages want them, and discovering that one
+        # module at a time is the failure this is meant to end.
+        #
+        # soft() like gh and trufflehog: a missing compiler should degrade the
+        # sandbox, not prevent it existing. That is the opposite of libatomic1
+        # above, which pnpm itself needs to start.
+        soft apt-get install -y --no-install-recommends \
+          gcc g++ libc6-dev python3-dev pkg-config
+
+        # Proved rather than assumed, because soft() means the install above can
+        # fail quietly and a compiler that is absent, or present and broken,
+        # looks identical until a native module tries to build. Every other
+        # check in this file fails at creation rather than at first use, and
+        # this one costs milliseconds. CC_OK is reported in the closing summary.
+        CC_OK=no
+        cc_dir="$(mktemp -d)"
+        printf 'int main(void){return 0;}\n' > "$cc_dir/t.c"
+        if cc -o "$cc_dir/t" "$cc_dir/t.c" 2>/dev/null && "$cc_dir/t"; then
+          CC_OK=yes
+        fi
+        rm -rf "$cc_dir"
+
         # --- mise, and Node and pnpm through it -------------------------
         # Node and pnpm used to be installed here by hand: a nodejs.org tarball
         # unpacked over /usr/local, and the pnpm standalone release with its
@@ -414,6 +449,7 @@ setup:
         # failure path, which is exactly what soft() exists to prevent.
         su -s /bin/sh agent -c 'node --version' || true
         su -s /bin/sh agent -c 'pnpm --version' || true
+        printf 'cc works: %s\n' "$CC_OK" || true
         gh --version 2>/dev/null | head -1 || true
         trufflehog --version 2>&1 | head -1 || true
 

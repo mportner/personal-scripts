@@ -44,6 +44,7 @@ twelve minutes, before any work started. A second session spent 8 of 18.
 | gh | 2.98.0 | github.com release | `gh_*_checksums.txt` |
 | trufflehog | 3.97.1 | github.com release | `trufflehog_*_checksums.txt` |
 | shellcheck, xz-utils, wget, file, tree, unzip | distro | apt | apt signatures |
+| gcc, g++, libc6-dev, python3-dev, pkg-config | distro | apt | apt signatures |
 | Playwright chromium system libs | distro | apt | apt signatures |
 
 mise installs into one shared directory, `/usr/local/share/mise`, with
@@ -313,13 +314,49 @@ An install kit rather than a prebaked image because kits cannot set one:
 `--kit`. At 30s, maintaining an image and tracking the upstream base is not
 worth it.
 
+## Native modules
+
+The image ships `make` and `python3` but no compiler, so anything `node-gyp`
+has to build from source used to die at:
+
+```
+make: cc: No such file or directory
+gyp ERR! stack Error: `make` failed with exit code: 2
+```
+
+league-service reaches this through `sqlite3`, which publishes no prebuilt for
+this platform and which its `pnpm-workspace.yaml` explicitly allows to build.
+The symptom is 14 tests failing with `Could not locate the bindings file ...
+node_sqlite3.node`, several hundred tests into a run, which reads like a broken
+install rather than a missing toolchain.
+
+The kit installs `gcc g++ libc6-dev python3-dev pkg-config`: the narrow set
+rather than `build-essential`, which additionally pulls `dpkg-dev` for Debian
+packaging that `node-gyp` never calls. `python3-dev` and `pkg-config` are there
+because most other `node-gyp` packages want them, and finding that out one
+module at a time is the failure this is meant to end.
+
+It goes in under `soft`, so a missing compiler degrades the sandbox rather than
+preventing it, and the result is then proved rather than assumed. Creation
+compiles a trivial C file and reports it beside the version banners:
+
+```
+v24.20.0
+11.24.0
+cc works: yes
+gh version 2.98.0 (2026-08-20)
+```
+
+Without that line a compiler that failed to install, or installed broken, looks
+identical to a working one until a native module tries to build.
+
 ## Failure behaviour
 
-The core toolchain (Node, corepack, pnpm) runs under `set -e`: if it cannot be
+The core toolchain (mise, Node, pnpm) runs under `set -e`: if it cannot be
 installed, sandbox creation fails loudly rather than handing back a sandbox that
-looks fine and is not. The optional extras (gh, trufflehog, apt packages,
-Playwright libs) go through a `soft` helper that warns and continues, because a
-transient 502 from a release host is not a reason to have no sandbox.
+looks fine and is not. The optional extras (gh, trufflehog, apt packages, the
+compiler, Playwright libs) go through a `soft` helper that warns and continues,
+because a transient 502 from a release host is not a reason to have no sandbox.
 
 The startup command can never exit non-zero. `/etc/durable-startup.d/run.sh`
 stops the whole chain on the first failure, which would take out the other
