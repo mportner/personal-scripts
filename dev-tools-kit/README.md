@@ -219,6 +219,40 @@ The pnpm baseline in `config.toml` is the one pin needing a manual check on
 bump, because mise's install is not subject to the release-age window that
 governs everything a project installs.
 
+### Three settings that are deliberately not in those files
+
+A registry pin, strict TLS and store re-verification are set as environment
+variables in `spec.yaml` rather than written into `config.yaml` or `.npmrc`:
+
+```yaml
+PNPM_CONFIG_REGISTRY / NPM_CONFIG_REGISTRY        https://registry.npmjs.org/
+PNPM_CONFIG_STRICT_SSL / NPM_CONFIG_STRICT_SSL    true
+PNPM_CONFIG_VERIFY_STORE_INTEGRITY                true
+```
+
+The placement is the point. A project's own `pnpm-workspace.yaml` or `.npmrc`
+outranks a user-level config file, so these written there would lose to exactly
+the thing they exist to beat. Verified against pnpm 11.24.0 and npm 11: with a
+stray `registry: https://stray.example/` in a project's `pnpm-workspace.yaml`,
+the config file loses and the environment variable wins. It also adds no
+settings to the two shipped files, so a diff still shows whether their policy is
+in step with its source; the only thing added to them is a comment saying where
+the other three went and why.
+
+All three pin a default rather than change behaviour; what they defend against
+is a config the sandbox did not write turning the default off. Store
+re-verification is the one that earns its place rather than merely being free:
+the store is now a long-lived volume shared by every project in the sandbox, so
+a corrupted entry persists across all of them instead of spoiling one install.
+
+These were lifted from [natesilva/sbx-kit-npm-pnpm-hardening][hardening-kit],
+which covers the same ground and covers these three more. The kit itself is
+deliberately not adopted: it configures an empty build allowlist, which is what
+produces the broken `@pnpm/exe` placeholder and would also stop `sqlite3`
+compiling, and it installs no pnpm at all.
+
+[hardening-kit]: https://github.com/natesilva/sbx-kit-npm-pnpm-hardening
+
 ## Keeping pnpm off the workspace mount
 
 The workspace is bind-mounted from the host, so a sandbox used to see the
@@ -312,12 +346,55 @@ than in the tree. Measured on a cold sandbox:
 **A project pinning a pnpm older than 11.23 is worse off, not merely no better.**
 `virtualStoreType` does not exist there, so the virtual store stays in the tree
 while the store above is still redirected to the volume. pnpm cannot hardlink
-across that boundary and copies every package into the host checkout instead.
+across that boundary and copies every package into the checkout instead.
 
-Both projects this kit serves pin an older pnpm today, so both are in that
-state. The fix is a one-line `packageManager` bump in each of those
-repositories; this kit cannot do it, because the pin is what pnpm obeys.
-Tracked downstream, in the repositories where the pin lives.
+This kit cannot fix that, because the pin is what pnpm obeys: it is a one-line
+`packageManager` bump in the repository that declares it. What the kit can do
+is refuse to hand over a sandbox in that state, which is what the preflight
+below is for. `pnpm config get virtual-store-type` answers `global` on 11.24.0
+and `undefined` on 11.17.0, so the two are told apart directly rather than by
+comparing version strings.
+
+### Refusing a sandbox that would write into the checkout
+
+Every failure on this path used to be silent, and that is the expensive part:
+a sandbox with no isolation at all looked exactly like a working one until an
+install had already written into the checkout. Both halves now say so.
+
+`project-sandbox` asks before attaching, and does not attach if the answer is
+wrong. It runs one probe in the sandbox and checks four things:
+
+- the store resolves somewhere, so pnpm could be asked at all
+- the store is not inside the workspace
+- the store is on the `/var/lib/pnpm` volume, and that volume is a real mount
+  rather than an ordinary directory sharing the container's filesystem
+- the virtual store is `global`, and a file written in the store can be
+  hardlinked
+
+The third one is the case worth spelling out, because the obvious version of it
+is wrong. A sandbox created before the volume was declared never grows one:
+volumes are settled at creation. The instinct is to catch that by comparing the
+store's filesystem to the workspace's, on the theory that a sandbox without the
+volume falls back to the workspace. It does not. The workspace is virtiofs and
+the container's filesystem is not, so those two always differ and the check
+passes for exactly the sandbox it was written to reject. The comparison has to
+be against the container's own filesystem instead. Both the launcher and the
+kit had this wrong, and only building a kit with the volumes block removed and
+starting a sandbox from it showed the difference.
+
+A path check alone would miss the last one. If the store and the virtual store
+end up on different filesystems, pnpm cannot hardlink and copies every package
+instead, which is both slow and what exhausted the disk on an earlier attempt.
+
+The kit's startup command cannot refuse, since it must exit 0 or take the other
+kits down with it. What it does instead is write the fact where the agent will
+read it: on a failed check it prepends a block to the kit's file under
+`kits-agent-context/`, saying plainly that installs would write into the
+checkout and that the sandbox has to be recreated. The block sits between
+markers and is rewritten on every container start, so it never stacks and it
+disappears when the fault clears. It uses only filesystem checks, deliberately:
+asking pnpm itself would resolve the project's pinned version and can trigger a
+download, which is not something to do on every start.
 
 ## Cost
 
@@ -383,6 +460,21 @@ The startup command can never exit non-zero. `/etc/durable-startup.d/run.sh`
 stops the whole chain on the first failure, which would take out the other
 kits' startup commands too; an `EXIT` trap forces status 0 on every path. See
 `claude-config-kit/README.md` for the same rule.
+
+That rule is why the isolation check is split across the two places described
+above. The startup command cannot refuse, so it records; `project-sandbox` can
+refuse, so it does. A sandbox reached some other way, `sbx run` included, gets
+the recorded warning rather than nothing.
+
+One failure is expected and is not a fault: **the first `pnpm install` on a
+checkout with no `node_modules` fails, and the retry succeeds.** Measured on
+one project, wiping `node_modules` and the store before each run, 5 of 5 first
+installs failed on the workspace mount with `ENOTDIR` from
+`mkdir '<workspace>/node_modules'`, and the same project copied off the mount
+failed 0 of 5. The errno is not stable: the same call reported `ENOENT` when
+this was first measured, so the guidance names both. It is the mount, not pnpm and not the project, and no kit can
+fix it from inside. What the kit does is tell the agent, in `agentInstructions`,
+to retry once rather than spend the session investigating the filesystem.
 
 ## Verified against
 

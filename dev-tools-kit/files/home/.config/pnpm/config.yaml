@@ -11,6 +11,13 @@
 #                          be installed, which blunts compromised-release attacks
 # minimumReleaseAgeStrict: no soft fallback when the window is not met
 # blockExoticSubdeps:      reject non-registry (git, tarball, ...) transitive deps
+#
+# Three further settings apply in the sandbox and none of them are written
+# here: a registry pin, strict TLS and store re-verification are set as
+# environment variables in spec.yaml instead. A project's own
+# pnpm-workspace.yaml outranks this file and would undo them, and this file is
+# kept unmodified so a diff still shows whether it is in step with its source.
+# Anything added there may be stricter than this, never looser.
 blockExoticSubdeps: true
 minimumReleaseAge: 7200
 minimumReleaseAgeStrict: true
