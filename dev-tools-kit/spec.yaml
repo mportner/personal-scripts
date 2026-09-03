@@ -127,11 +127,17 @@ environment:
     # project pinning a version that is not baked in can still install it.
     MISE_DATA_DIR: /usr/local/share/mise
 
-    # Deliberately no MISE_TRUSTED_CONFIG_PATHS. mise's trust gate covers the
-    # parts of a config that execute (`[env]`, `[tasks]`), not tool versions:
-    # an untrusted mise.toml and an untrusted package.json still resolve their
-    # `packageManager` pin. Nothing here reads project `[env]`, because the two
-    # PNPM_CONFIG_ settings above do that job for every project at once.
+    # Deliberately no MISE_TRUSTED_CONFIG_PATHS, because nothing here needs a
+    # project config to be trusted. An idiomatic version file is never subject
+    # to the gate, so `packageManager` in a package.json resolves untrusted,
+    # and a mise.toml is exempt while it holds only tools, tasks and
+    # min_version. Verified: an untrusted mise.toml declaring just `[tools]`
+    # resolves its pin.
+    #
+    # The exemption ends the moment a project adds `[env]`, and mise then
+    # refuses the whole file rather than the offending section, `[tools]`
+    # included. It says so loudly rather than silently. If a project here ever
+    # grows an `[env]` block, this decision has to be revisited.
 
     # The content-addressable store, moved onto the volume above. Safe to share
     # across every project in the sandbox because it is addressed by content.
@@ -159,7 +165,15 @@ environment:
     # against 291 files in the store.
     #
     # Requires pnpm 11.23 or newer, which introduced the setting. An older pnpm
-    # ignores it and leaves the virtual store in the tree.
+    # ignores it silently and leaves the virtual store in the tree, which is
+    # worse than leaving both in the tree: the store above is still redirected,
+    # so the two end up on different filesystems and every package becomes a
+    # full copy written into the host checkout.
+    #
+    # league-service pins 11.7.0 and league-bot 11.17.0, so both are in that
+    # state until their `packageManager` moves. Tracked in issue #30; it is a
+    # one-line change in each of those repositories, not something this kit can
+    # do, because the pin is what pnpm obeys.
     PNPM_CONFIG_VIRTUAL_STORE_TYPE: global
 
     # Nothing here should ever act on an npm self-update notice.
@@ -176,8 +190,15 @@ setup:
         # Bump these by hand. Each is checksum-verified below against the
         # publisher's own manifest, so a bad pin fails loudly rather than
         # installing something unexpected.
-        MISE_VERSION=v2026.9.1      # installs Node and pnpm; versions live in
-                                    # files/home/.config/mise/config.toml
+        MISE_VERSION=v2026.8.14     # installs Node and pnpm; versions live in
+                                    # files/home/.config/mise/config.toml.
+                                    # Published 2026-08-26, so it has cleared the
+                                    # 5-day release-age window this setup enforces
+                                    # everywhere else. Check that before bumping:
+                                    # mise cuts a release most days, and the newest
+                                    # tag is routinely hours old. Neither this
+                                    # download nor mise's own installs are subject
+                                    # to the window, so it is enforced by hand here.
         GH_VERSION=2.98.0           # image ships 2.46, which predates several flags in use
         TRUFFLEHOG_VERSION=3.97.1   # league-service security:scan; its own script says
                                     # `brew install`, which cannot work on Linux
@@ -359,7 +380,9 @@ setup:
         # broken symlink or an empty shim directory.
         su -s /bin/sh agent -c '
           set -eu
+          export MISE_DATA_DIR=/usr/local/share/mise
           node --version >/dev/null
+          npm --version >/dev/null
           pnpm --version >/dev/null
         '
 
@@ -447,8 +470,8 @@ setup:
         # last command and head succeeds regardless. That is too subtle to rely
         # on: anyone adding `set -o pipefail` here would turn this block into a
         # failure path, which is exactly what soft() exists to prevent.
-        su -s /bin/sh agent -c 'node --version' || true
-        su -s /bin/sh agent -c 'pnpm --version' || true
+        su -s /bin/sh agent -c 'export MISE_DATA_DIR=/usr/local/share/mise; node --version' || true
+        su -s /bin/sh agent -c 'export MISE_DATA_DIR=/usr/local/share/mise; pnpm --version' || true
         printf 'cc works: %s\n' "$CC_OK" || true
         gh --version 2>/dev/null | head -1 || true
         trufflehog --version 2>&1 | head -1 || true
@@ -468,9 +491,12 @@ setup:
           set -e
 
           # The volume declared above mounts root-owned whatever `mode` says,
-          # so the agent cannot write to it until this runs. Re-running on
-          # every container start is harmless and covers a volume that was
-          # replaced between starts.
+          # so the agent cannot write to it until this runs.
+          #
+          # Guarded on the current owner rather than run unconditionally. This
+          # re-runs on every container start, and `chown -R` costs one syscall
+          # per file: harmless on the empty volume of a first start, and a walk
+          # of the whole store by the time it holds a real install.
           #
           # This replaced a block that walked the workspace and bind-mounted a
           # private directory over every node_modules it found or expected.
@@ -479,4 +505,6 @@ setup:
           # without mounting anything, so there is nothing left to fail
           # silently and nothing for a mid-session worktree to miss.
           mkdir -p /var/lib/pnpm/store
-          chown -R agent:agent /var/lib/pnpm
+          if [ "$(stat -c %U /var/lib/pnpm)" != agent ]; then
+            chown -R agent:agent /var/lib/pnpm
+          fi

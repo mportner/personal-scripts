@@ -158,12 +158,23 @@ the contrib kit deliberately ships no toolchain.
 
 ### No trust configuration
 
-mise refuses to evaluate an untrusted config, and does so silently, which would
-be a problem worth handling. It is not one here: the trust gate covers the
-parts of a config that execute, `[env]` and `[tasks]`, not tool versions. An
-untrusted `mise.toml` and an untrusted `package.json` both still resolve their
-pin. Nothing in this kit reads project `[env]`, because the two `PNPM_CONFIG_`
-settings below cover every project at once.
+mise refuses to evaluate an untrusted config, which would be worth handling if
+anything here needed one trusted. Nothing does. An idiomatic version file is
+never subject to the gate, so `packageManager` in a `package.json` resolves
+untrusted, and a `mise.toml` is exempt while it holds only tools, tasks and
+`min_version`:
+
+```
+$ cd a && mise current pnpm          # mise.toml with [tools] only
+11.20.0
+$ cd b && mise current pnpm          # same file plus an [env] block
+mise ERROR Config files in .../b/mise.toml are not trusted.
+```
+
+Note what the second case does: it refuses the **whole file**, `[tools]`
+included, and says so loudly rather than silently. So the exemption ends the
+moment a project adds an `[env]` block, and this decision would need
+revisiting. Nothing in these repositories has one.
 
 `PNPM_HOME` is `/home/agent/.local`, not the more obvious
 `/home/agent/.local/share/pnpm`, because pnpm derives its global bin directory
@@ -286,8 +297,11 @@ pnpm off, and pointing the store at a volume is right either way.
 
 ### What this changes for you
 
-The host `node_modules` is invisible inside the sandbox, so a fresh
-`pnpm install` is needed once per sandbox. Measured on a cold sandbox:
+The host `node_modules` is no longer hidden. The bind mounts that used to shadow
+it are gone, so the sandbox and your Mac look at the same directory, and it
+holds whichever platform installed last. A fresh `pnpm install` is still needed
+once per sandbox, because the packages it points at live on the volume rather
+than in the tree. Measured on a cold sandbox:
 
 | | league-service (1109 pkgs, 7 workspaces) | league-bot |
 | --- | --- | --- |
@@ -295,9 +309,15 @@ The host `node_modules` is invisible inside the sandbox, so a fresh
 | `pnpm typecheck` | 2.2s, 5/5 tasks | passes |
 | `pnpm test` | | 194/194 passing |
 
-A project pinning a pnpm older than 11.23 through `packageManager` does not get
-`virtualStoreType`, so its virtual store stays in the tree. Bumping the pin is
-the fix.
+**A project pinning a pnpm older than 11.23 is worse off, not merely no better.**
+`virtualStoreType` does not exist there, so the virtual store stays in the tree
+while the store above is still redirected to the volume. pnpm cannot hardlink
+across that boundary and copies every package into the host checkout instead.
+
+league-service pins `pnpm@11.7.0` and league-bot `pnpm@11.17.0`, so both are in
+that state today. The fix is a one-line `packageManager` bump in each of those
+repositories; this kit cannot do it, because the pin is what pnpm obeys. Tracked
+in issue #30.
 
 ## Cost
 

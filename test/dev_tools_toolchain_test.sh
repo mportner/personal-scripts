@@ -20,6 +20,14 @@
 SPEC="$REPO_DIR/dev-tools-kit/spec.yaml"
 spec="$(cat "$SPEC")"
 
+# One top-level block of the spec, so an assertion can be aimed at the section
+# where a setting would actually take effect rather than at the whole file,
+# where a comment mentioning it would satisfy the match.
+# $1 the key the section starts at, $2 the key that ends it
+spec_section() {
+  sed -n "/^$1:/,/^$2:/p" "$SPEC"
+}
+
 # --- the volume ---------------------------------------------------------------
 
 assert_contains "$spec" 'path: /var/lib/pnpm' "declares the pnpm volume"
@@ -27,14 +35,14 @@ assert_contains "$spec" 'path: /var/lib/pnpm' "declares the pnpm volume"
 # Without a size sbx hands back a 488M volume, which ENOSPCs partway through a
 # real install. This is the field whose absence was the reason the kit avoided
 # volumes altogether.
-volume_block="$(sed -n '/^volumes:/,/^environment:/p' "$SPEC")"
+volume_block="$(spec_section volumes environment)"
 assert_contains "$volume_block" 'size:' "gives the volume an explicit size"
 
 # --- pnpm pointed at it -------------------------------------------------------
 
 # pnpm 11 reads pnpm_config_* / PNPM_CONFIG_*. The npm_config_* spelling is
 # accepted by nothing and fails silently, leaving the store at its default.
-env_block="$(sed -n '/^environment:/,/^setup:/p' "$SPEC")"
+env_block="$(spec_section environment setup)"
 assert_contains "$env_block" 'PNPM_CONFIG_STORE_DIR: /var/lib/pnpm/store' \
   "points the content-addressable store at the volume"
 
@@ -47,12 +55,12 @@ assert_not_contains "$declared" 'npm_config_store_dir' \
 # The store alone is not enough. Left at its default the virtual store sits in
 # <project>/node_modules/.pnpm, on the workspace mount, and pnpm cannot
 # hardlink from a store on another filesystem: it copies every package instead.
-assert_contains "$spec" 'PNPM_CONFIG_VIRTUAL_STORE_TYPE: global' \
+assert_contains "$declared" 'PNPM_CONFIG_VIRTUAL_STORE_TYPE: global' \
   "keeps the virtual store off the workspace mount"
 
 # --- the volume is writable ---------------------------------------------------
 
-startup="$(sed -n '/^  startup:/,$p' "$SPEC")"
+startup="$(sed -n '/^  startup:/,$p' "$SPEC")"  # nested, so not spec_section
 assert_contains "$startup" 'chown -R agent:agent /var/lib/pnpm' \
   "hands the root-owned volume to the agent"
 assert_contains "$startup" "trap 'exit 0' EXIT" \
@@ -75,12 +83,11 @@ assert_not_contains "$launcher" 'mount --bind' \
 
 # --- pnpm comes from mise, at the version the project pins --------------------
 
-# `packageManager` makes pnpm 11 self-manage: a pnpm that is not the pinned
-# version fetches one from the npm registry as @pnpm/exe and re-executes it.
-# That copy ships a placeholder binary needing a lifecycle script, and when the
-# script does not run every pnpm call in the project fails. It does not trigger
-# when the running pnpm already matches the pin, which is the whole reason mise
-# is here, so these are the settings that keep it from coming back.
+# `packageManager` makes pnpm 11 fetch a second pnpm from the npm registry and
+# re-execute it, and that copy arrives broken. It does not do so when the
+# running pnpm already matches the pin, which is the whole reason mise is here.
+# See "pnpm: mise, not corepack and not npm" in dev-tools-kit/README.md; these
+# are the settings that keep the behaviour from coming back.
 
 MISE_CONF="$REPO_DIR/dev-tools-kit/files/home/.config/mise/config.toml"
 mise_conf="$(cat "$MISE_CONF")"
