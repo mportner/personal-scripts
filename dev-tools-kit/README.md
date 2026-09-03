@@ -129,7 +129,7 @@ idiomatic_version_file_enable_tools = ["pnpm"]
 and resolves each project's pin from its own `package.json`:
 
 ```
-$ cd league-service && mise current pnpm
+$ cd <a project pinning pnpm@11.7.0> && mise current pnpm
 11.7.0
 ```
 
@@ -314,10 +314,10 @@ than in the tree. Measured on a cold sandbox:
 while the store above is still redirected to the volume. pnpm cannot hardlink
 across that boundary and copies every package into the host checkout instead.
 
-league-service pins `pnpm@11.7.0` and league-bot `pnpm@11.17.0`, so both are in
-that state today. The fix is a one-line `packageManager` bump in each of those
-repositories; this kit cannot do it, because the pin is what pnpm obeys. Tracked
-in issue #30.
+Both projects this kit serves pin an older pnpm today, so both are in that
+state. The fix is a one-line `packageManager` bump in each of those
+repositories; this kit cannot do it, because the pin is what pnpm obeys.
+Tracked downstream, in the repositories where the pin lives.
 
 ## Cost
 
@@ -344,8 +344,9 @@ make: cc: No such file or directory
 gyp ERR! stack Error: `make` failed with exit code: 2
 ```
 
-league-service reaches this through `sqlite3`, which publishes no prebuilt for
-this platform and which its `pnpm-workspace.yaml` explicitly allows to build.
+A project this kit serves reaches this through `sqlite3`, which publishes no
+prebuilt for this platform and which its `pnpm-workspace.yaml` explicitly
+allows to build.
 The symptom is 14 tests failing with `Could not locate the bindings file ...
 node_sqlite3.node`, several hundred tests into a run, which reads like a broken
 install rather than a missing toolchain.

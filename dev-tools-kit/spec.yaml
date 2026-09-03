@@ -170,10 +170,10 @@ environment:
     # so the two end up on different filesystems and every package becomes a
     # full copy written into the host checkout.
     #
-    # league-service pins 11.7.0 and league-bot 11.17.0, so both are in that
-    # state until their `packageManager` moves. Tracked in issue #30; it is a
-    # one-line change in each of those repositories, not something this kit can
-    # do, because the pin is what pnpm obeys.
+    # Both projects this kit serves pin an older pnpm today, so both are in
+    # that state until their `packageManager` moves. Tracked downstream; it is
+    # a one-line change in each of those repositories, not something this kit
+    # can do, because the pin is what pnpm obeys.
     PNPM_CONFIG_VIRTUAL_STORE_TYPE: global
 
     # Nothing here should ever act on an npm self-update notice.
@@ -257,9 +257,10 @@ setup:
         # --- a C toolchain for native modules ---------------------------
         # The image has make and python3 but no compiler at all, so anything
         # node-gyp has to build from source dies at `make: cc: No such file or
-        # directory`. league-service hits this through sqlite3, which publishes
-        # no prebuilt for this platform and which its pnpm-workspace.yaml
-        # explicitly allows to build; the symptom is 14 tests failing with
+        # directory`. A project this kit serves hits this through sqlite3,
+        # which publishes no prebuilt for this platform and which its
+        # pnpm-workspace.yaml explicitly allows to build; the symptom is 14
+        # tests failing with
         # `Could not locate the bindings file ... node_sqlite3.node`, several
         # hundred tests into a run, which reads like a broken install rather
         # than a missing toolchain.

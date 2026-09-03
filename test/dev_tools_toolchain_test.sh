@@ -30,12 +30,16 @@ spec_section() {
 
 # --- the volume ---------------------------------------------------------------
 
-assert_contains "$spec" 'path: /var/lib/pnpm' "declares the pnpm volume"
+# Both assertions read the volumes block rather than the whole file. This file
+# mentions /var/lib/pnpm in prose in several places, so a whole-file match
+# stays green when the declaration itself is deleted, which is the one thing
+# the assertion exists to catch.
+volume_block="$(spec_section volumes environment)"
+assert_contains "$volume_block" 'path: /var/lib/pnpm' "declares the pnpm volume"
 
 # Without a size sbx hands back a 488M volume, which ENOSPCs partway through a
 # real install. This is the field whose absence was the reason the kit avoided
 # volumes altogether.
-volume_block="$(spec_section volumes environment)"
 assert_contains "$volume_block" 'size:' "gives the volume an explicit size"
 
 # --- pnpm pointed at it -------------------------------------------------------
