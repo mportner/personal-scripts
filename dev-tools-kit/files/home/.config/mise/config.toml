@@ -1,0 +1,34 @@
+# File:    config.toml
+# Created: 2026-09-03
+# License: MIT
+#
+# Copyright (c) 2026 Michael Portner
+#
+# The sandbox's baseline toolchain. mise reads this from ~/.config/mise, so it
+# applies everywhere the agent works and is overridden by anything a project
+# declares for itself.
+
+# Both versions must clear the 5-day release-age window the sandbox enforces
+# everywhere else, because mise's own installs are not subject to it. Check the
+# publish date before bumping either one.
+
+[tools]
+# LTS Krypton; both league projects declare engines.node 24.x.
+# Published 2026-08-26.
+node = "24.20.0"
+
+# A baseline only; `packageManager` wins per project through the setting below.
+# It has to be 11.23 or newer for PNPM_CONFIG_VIRTUAL_STORE_TYPE to mean
+# anything, which is what keeps the virtual store off the workspace mount.
+#
+# Published 2026-08-24. 11.25.0 was four days old at the time of writing and
+# would have violated the window.
+pnpm = "11.24.0"
+
+[settings]
+# Why this kit uses mise at all: it makes mise read the same `packageManager`
+# field a project pins, and install that exact version, so the running pnpm
+# already is the pinned one. pnpm then never reaches for the copy it would
+# otherwise fetch from the npm registry, which is the one that arrives broken.
+# See "pnpm: mise, not corepack and not npm" in the kit README.
+idiomatic_version_file_enable_tools = ["pnpm"]

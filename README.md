@@ -205,9 +205,9 @@ have changed.
 
 In `project-sandbox`, `--worktree NAME` is handled by the launcher rather than
 passed through to `claude`, because a worktree it does not know about is one
-whose `node_modules` it cannot isolate from the host's. `research-sandbox`
-forwards the flag instead: its workspace is a clone on a container volume, where
-that isolation is inert and there is no host tree to pre-create in.
+whose branch it cannot check before the agent starts. `research-sandbox`
+forwards the flag instead: its workspace is a clone on a container volume, so
+there is no host tree to pre-create in.
 
 #### Running more than one agent in a sandbox
 
@@ -273,15 +273,18 @@ never has to install its own. The stock image ships Node 22, no pnpm and gh
 `corepack enable` and hand-rolling a pnpm shim in its scratch directory. In one
 measured transcript that took 27 of 89 bash calls.
 
-pnpm comes from its standalone release with a pinned sha256, not from corepack
-or npm, and its own `manage-package-manager-versions` gives each project the
-version its `packageManager` field asks for.
+Node and pnpm come from mise, not corepack or npm, and mise reads the same
+`packageManager` field so each project gets the version it asks for. That is
+what stops pnpm's own self-management fetching a second, unpinned pnpm from the
+npm registry, which shipped a placeholder binary and broke every pnpm call in
+the project.
 
 It also carries the host's supply-chain policy in (`minimumReleaseAge`,
 `minimumReleaseAgeStrict`, `blockExoticSubdeps`) rather than leaving it to
-whichever repositories happen to commit those settings, and gives the sandbox a
-private `node_modules` so a Linux install stops fighting the host's macOS one
-over the bind mount. See its [README](dev-tools-kit/README.md).
+whichever repositories happen to commit those settings, and keeps everything
+pnpm generates on a container volume so a Linux install stops fighting the
+host's macOS one over the bind mount. See its
+[README](dev-tools-kit/README.md).
 
 Adds about 30s to sandbox creation, most of it Playwright's system libraries;
 `-e SBX_DEV_TOOLS_PLAYWRIGHT=0` skips those and brings it down to about 15s.

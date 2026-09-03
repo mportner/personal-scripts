@@ -109,8 +109,8 @@ Options:
                         sandbox only, so the global token is never used.
       --no-token        Create with no GitHub credential at all.
   -w, --worktree NAME   Attach with the agent working in .claude/worktrees/NAME
-                        on branch worktree-NAME, pre-created here so its
-                        node_modules is isolated from the host's. Only valid
+                        on branch worktree-NAME, pre-created here so the branch
+                        state is checked before the agent starts. Only valid
                         when attaching.
       --no-playwright   Skip Playwright's system libraries, halving creation
                         time. Leave them in if the project runs browser tests.
@@ -129,7 +129,8 @@ no. Either way the assumed answer is printed.
 
 Anything after -- is passed to the agent. --worktree is lifted out of it and
 handled here, in all of --worktree NAME, --worktree=NAME and -w NAME, because
-a worktree the launcher does not know about is one it cannot isolate.
+a worktree the launcher does not know about is one it cannot pre-create or
+report on.
 
 Environment:
   SBX_GH_TOKEN_REF_<OWNER>  Token reference for one repository owner, e.g.
@@ -188,124 +189,17 @@ confirm() {
   esac
 }
 
-# dev-tools-kit gives every bind-mounted node_modules a private directory on
-# the container's own filesystem, but it does that in a startup command, over
-# the workspace as it stood when the container started. A worktree added
-# afterwards is invisible to it, so the same treatment is applied here by hand.
-#
-# Without it, installs inside the worktree resolve over virtiofs against the
-# host's macOS tree: @esbuild/darwin-arm64 and friends cannot run on Linux, so
-# every install re-resolves the whole tree and writes the result back onto the
-# host, corrupting it in both directions. That is the failure dev-tools-kit
-# exists to prevent, and a worktree is exactly where it would come back.
-#
-# Deliberately the same store and the same naming as that kit (the path
-# relative to the workspace, slashes folded to underscores), so the two are
-# idempotent with respect to each other: anything mounted here already reads as
-# overlay rather than virtiofs when the kit's startup command re-runs on the
-# next container start, and is skipped there.
-#
-# Unbounded depth, unlike the kit's maxdepth 4. A worktree already sits three
-# levels down at .claude/worktrees/NAME, so a monorepo's own packages fall past
-# that limit and would be left on the host tree.
-isolate_worktree_node_modules() {
-  step "Isolating node_modules under $WORKTREE_DIR"
-  # WORKSPACE_DIR is the mount point inside the container, which sbx sets to
-  # the same absolute path as the host checkout, so WORKTREE_DIR needs no
-  # translation. Passed as an argument rather than interpolated into the
-  # script, so a path with a quote or a space in it cannot reshape the command.
-  # Single quotes throughout the block below are deliberate: every $ in it
-  # has to reach the container's shell unexpanded, and the one value from
-  # out here arrives as $1.
-  # shellcheck disable=SC2016
-  if sbx exec -u root "$NAME" -- sh -c '
-      set -eu
-      WT="$1"
-      STORE=/var/lib/sbx-dev-tools
-      [ -n "${WORKSPACE_DIR:-}" ] || exit 0
-      [ "$(findmnt -no FSTYPE --target "$WORKSPACE_DIR" 2>/dev/null)" = virtiofs ] || exit 0
-      mkdir -p "$STORE"
-
-      mounted=0
-      skipped=0
-      MANIFESTS=$(mktemp)
-      LIST=$(mktemp)
-
-      # Candidates come from committed package.json files, not only from
-      # directories that already exist: on a fresh worktree there is no
-      # node_modules yet, so mounting over what is there would cover nothing
-      # and the first install would land on the host tree.
-      find "$WT" \( -name node_modules -o -name .git \) -prune \
-           -o -name package.json -type f -print > "$MANIFESTS" 2>/dev/null || true
-      while IFS= read -r manifest; do
-        echo "${manifest%/package.json}/node_modules" >> "$LIST"
-      done < "$MANIFESTS"
-
-      # .pnpm-store belongs on the same filesystem as node_modules: pnpm
-      # hardlinks out of it, which only works within one filesystem, so
-      # leaving it behind turns every package into a full copy.
-      echo "$WT/.pnpm-store" >> "$LIST"
-
-      # Unioned in to catch any directory with no package.json beside it.
-      find "$WT" \( -name node_modules -o -name .pnpm-store \) -type d -prune \
-           >> "$LIST" 2>/dev/null || true
-
-      sort -u "$LIST" > "$MANIFESTS"
-
-      while IFS= read -r dir; do
-        # The mountpoint has to exist first. This must come before the
-        # filesystem test: findmnt --target prints nothing for a path that
-        # does not exist rather than falling back to the parent mount, so
-        # testing first skips every directory yet to be created.
-        [ -d "$dir" ] || mkdir -p "$dir" 2>/dev/null || continue
-
-        # Idempotent: anything already isolated, whether by this launcher on an
-        # earlier attach or by the kit at container start, reads as the
-        # container filesystem rather than virtiofs. A second bind mount over
-        # the same path would simply stack.
-        if [ "$(findmnt -no FSTYPE --target "$dir" 2>/dev/null)" != virtiofs ]; then
-          skipped=$(( skipped + 1 ))
-          continue
-        fi
-
-        rel=$(echo "${dir#"$WORKSPACE_DIR"/}" | tr / _)
-        [ -n "$rel" ] || rel=root
-
-        back="$STORE/$rel"
-        mkdir -p "$back"
-        chown agent:agent "$back"
-
-        if mount --bind "$back" "$dir" 2>/dev/null; then
-          echo "    isolated $dir"
-          mounted=$(( mounted + 1 ))
-        else
-          echo "    WARNING  could not isolate $dir" >&2
-        fi
-      done < "$MANIFESTS"
-
-      # Says so rather than printing a banner and nothing else, which on a
-      # re-attach is indistinguishable from the step having failed.
-      echo "    $mounted newly isolated, $skipped already on the container filesystem"
-
-      rm -f "$LIST" "$MANIFESTS"
-    ' sh "$WORKTREE_DIR"; then
-    :
-  else
-    note "WARNING: node_modules under the worktree was not isolated. Installs"
-    note "         there will write to the host checkout over virtiofs."
-  fi
-}
-
 # --- options ----------------------------------------------------------------
 # Everything after -- belongs to the agent, except --worktree, which is lifted
 # back out below.
 
 # Why this launcher insists on a name, appended by the library to the message
 # it shares with research-sandbox. A worktree we cannot name is one we cannot
-# pre-create, and one the agent creates for itself gets no node_modules
-# isolation at all, which is this launcher's concern alone.
+# pre-create, so its branch never passes through the checks below: whether the
+# branch already exists and carries old work, whether the path is a leftover
+# directory git has no worktree for, and whether the checkout is dirty.
 WORKTREE_NAME_REASON="This is narrower than \`claude --worktree\` on purpose: the name is what lets
-the launcher pre-create the worktree and isolate its node_modules, so one it
+the launcher pre-create the worktree and check its branch first, so one it
 cannot name is one it cannot prepare."
 
 while (( $# > 0 )); do
@@ -341,8 +235,8 @@ done
 
 # Whatever survived the -- is the agent's, minus any --worktree spelling, which
 # is normalised out here and re-added as a single canonical pair at launch.
-# Passing it straight through would let claude create the worktree itself, and
-# a worktree that appears after the container started has no isolation.
+# Passing it straight through would let claude create the worktree itself,
+# skipping the branch checks below and leaving nothing to report.
 AGENT_ARGS=()
 while (( $# > 0 )); do
   if take_worktree_flag "$@"; then shift "$WORKTREE_SHIFT"; continue; fi
@@ -367,8 +261,8 @@ if (( DESTROY )); then
 
   # Milder than the research launcher's warning, and accurately so: commits
   # made in here landed in the bind-mounted checkout, not inside the container.
-  # What does die with the sandbox is its container-side state, which is where
-  # the Linux node_modules lives.
+  # What does die with the sandbox is its container-side state, including the
+  # pnpm volume holding the whole Linux install.
   if (( ! DRY_RUN )); then
     if ! confirm "Remove these? The sandbox's own node_modules and caches are lost." no; then
       die "cancelled (use --yes to skip this prompt)"
@@ -482,10 +376,10 @@ else
   MODE=create
 fi
 
-# The worktree has to be added to the host checkout and then isolated inside a
-# container that is already running, so there is nothing to add it to until the
-# sandbox exists. Rather than quietly creating first and applying the flag
-# after, which hides a two-step operation behind one command, say so.
+# Preparing a worktree and launching an agent into it are two operations, and
+# the second one needs a sandbox that already exists. Rather than quietly
+# creating first and applying the flag after, which hides that behind one
+# command, say so.
 if (( WORKTREE_SEEN )) && [[ "$MODE" == create ]]; then
   die \
 "--worktree only applies when attaching, and no sandbox named '$NAME' exists yet.
@@ -725,10 +619,12 @@ if [[ -n "$WORKTREE" ]]; then
   # is not configurable, which is what makes pre-creating it work: claude
   # reuses a worktree that is already there rather than erroring.
   #
-  # Pre-creating it is the whole point. dev-tools-kit isolates node_modules at
-  # container start, so a worktree that appears mid-session gets none: its
-  # installs resolve over virtiofs against the host's macOS tree, which is both
-  # slow and what corrupted that tree before the kit existed.
+  # Pre-creating it is what puts the branch through the checks below before
+  # the agent is looking at it. It used to carry a second job, bind-mounting a
+  # private node_modules over the new tree, because dev-tools-kit could only do
+  # that at container start and a mid-session worktree missed out. That job is
+  # gone: the kit keeps pnpm's output on a volume, so a worktree created at any
+  # point, by this launcher or by claude itself, is already covered.
   BRANCH_EXISTED=0
   if git -C "$REPO_ROOT" show-ref --verify --quiet "refs/heads/$WORKTREE_BRANCH"; then
     BRANCH_EXISTED=1
@@ -743,9 +639,8 @@ if [[ -n "$WORKTREE" ]]; then
     # A directory git has no worktree registered for is not one, however much
     # it looks like it: a leftover from a removed worktree, or an unrelated
     # directory that happens to sit at the path. `claude --worktree` would try
-    # to create a worktree there and fail, and isolating it first would mount
-    # over files nothing is managing. Reported rather than removed, because it
-    # may hold work and this script does not delete directories.
+    # to create a worktree there and fail. Reported rather than removed,
+    # because it may hold work and this script does not delete directories.
     if ! git -C "$REPO_ROOT" worktree list --porcelain \
          | grep -qxF "worktree $WORKTREE_DIR"; then
       die \
@@ -762,8 +657,6 @@ Look at what is in it, then either remove it or run:
     git -C "$REPO_ROOT" worktree add "$WORKTREE_DIR" -b "$WORKTREE_BRANCH" \
       || die "could not add a worktree at $WORKTREE_DIR"
   fi
-
-  isolate_worktree_node_modules
 fi
 
 # Reachability only unless asked for more. Revocation and rescoping both show

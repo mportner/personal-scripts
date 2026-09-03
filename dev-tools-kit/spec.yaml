@@ -15,6 +15,10 @@
 # a pnpm shim in its scratch directory. Measured on a real session: 27 of 89
 # bash calls went to toolchain wrangling before any work started.
 #
+# Node and pnpm come from mise, which resolves each project's pinned version
+# from its own package.json. See the install step for why that matters beyond
+# convenience.
+#
 # Stacks with claude-config rather than replacing it:
 #   sbx create claude \
 #     --kit ~/personal-scripts/claude-config-kit \
@@ -25,8 +29,13 @@
 # blockExoticSubdeps applied globally rather than only inside repositories that
 # commit them. Every direct download is a pinned version checked against the
 # publisher's own checksum manifest; the supporting packages come from apt,
-# signed by the distro and versioned by it rather than pinned here. Nothing
-# runs through npm or npx.
+# signed by the distro and versioned by it rather than pinned here.
+#
+# Nothing here runs through npm or npx, and that is now true rather than
+# aspirational. It was not before: `packageManager` made pnpm fetch a second,
+# unpinned pnpm from the npm registry and re-execute it. mise installing the
+# pinned version is what stops that, because self-management does not trigger
+# when the running pnpm already matches the pin.
 #
 # Roughly 30s at sandbox creation, most of it the Playwright system libraries;
 # about 15s with SBX_DEV_TOOLS_PLAYWRIGHT=0 (see below) to skip those. Measured
@@ -36,7 +45,7 @@ kind: mixin
 name: dev-tools
 version: "0.1.0"
 displayName: Dev Toolchain
-description: Installs Node 24, standalone pnpm, current gh, and project tooling.
+description: Installs mise with Node and pnpm, current gh, and project tooling.
 
 # Deliberately beside the kit that installs `gh`, rather than in research-kit
 # where these two sections used to live. They describe how the agent should use
@@ -79,6 +88,30 @@ agentInstructions:
     branch as green on the strength of a local run. If you genuinely cannot
     read CI, say so plainly in those words.
 
+# One sized volume holding everything pnpm generates. The workspace is a
+# virtiofs mount of the host checkout, so anything pnpm writes under it is
+# written into a macOS tree by a Linux install: the darwin binaries are
+# unrunnable here, hardlinking across the mount boundary silently degrades to
+# full copies, and installs failed outright with ENOENT on directories whose
+# parents existed.
+#
+# The previous answer was to bind-mount a private directory over every
+# node_modules at container start. That needed root, needed a second copy of
+# the same logic in project-sandbox for worktrees, and could not cover a
+# worktree created after the container started, which is the case that broke.
+#
+# `size` is what makes this possible and is why the volume was rejected before:
+# a comment here used to record that volumes[].path takes no size and sbx gives
+# one 488M. Spec v2 defines the field and sbx 0.39.0 honours it; a kit
+# declaring 10g gets a 9.8G ext4 filesystem. Volumes survive stop/start and are
+# dropped by `sbx rm`, same as the container.
+volumes:
+  - path: /var/lib/pnpm
+    size: 10g
+    # Mounts root-owned regardless, so a startup command chowns it. Left at the
+    # normal directory mode rather than 1777: nothing here is multi-user.
+    mode: "0755"
+
 environment:
   variables:
     # pnpm derives its global bin directory as $PNPM_HOME/bin, so this points
@@ -87,6 +120,62 @@ environment:
     # install print "the configured global bin directory is not in PATH" and
     # exit 1.
     PNPM_HOME: /home/agent/.local
+
+    # Where the install step put Node and pnpm. Without this the agent's mise
+    # looks in ~/.local/share/mise, finds nothing, and every shim reinstalls
+    # the toolchain on first use. One shared directory, agent-owned so a
+    # project pinning a version that is not baked in can still install it.
+    MISE_DATA_DIR: /usr/local/share/mise
+
+    # Deliberately no MISE_TRUSTED_CONFIG_PATHS, because nothing here needs a
+    # project config to be trusted. An idiomatic version file is never subject
+    # to the gate, so `packageManager` in a package.json resolves untrusted,
+    # and a mise.toml is exempt while it holds only tools, tasks and
+    # min_version. Verified: an untrusted mise.toml declaring just `[tools]`
+    # resolves its pin.
+    #
+    # The exemption ends the moment a project adds `[env]`, and mise then
+    # refuses the whole file rather than the offending section, `[tools]`
+    # included. It says so loudly rather than silently. If a project here ever
+    # grows an `[env]` block, this decision has to be revisited.
+
+    # The content-addressable store, moved onto the volume above. Safe to share
+    # across every project in the sandbox because it is addressed by content.
+    #
+    # The prefix matters: pnpm 11 reads `pnpm_config_*` / `PNPM_CONFIG_*`, and
+    # the older `npm_config_*` spelling is silently ignored for this setting.
+    # Verified against pnpm 11.24.0; `npm_config_store_dir` left the store at
+    # its default and printed nothing to say so.
+    PNPM_CONFIG_STORE_DIR: /var/lib/pnpm/store
+
+    # Without this the virtual store stays at <project>/node_modules/.pnpm, on
+    # the workspace mount, and the store above would then be on a different
+    # filesystem from it: pnpm cannot hardlink across that boundary and copies
+    # every package instead, which is both slow and what exhausted the disk on
+    # an earlier attempt. `global` puts it in the store, so the two are on one
+    # filesystem by construction.
+    #
+    # It also removes the reason to compute a per-project path. A virtual store
+    # encodes one project's dependency graph, so a single shared path would be
+    # wrong; `global` is pnpm's own supported answer to that, which is why this
+    # needs neither a wrapper on PATH nor per-project configuration.
+    #
+    # What stays in the workspace is the symlink farm and pnpm's own metadata.
+    # Measured on a one-dependency project: 9 entries under node_modules
+    # against 291 files in the store.
+    #
+    # Requires pnpm 11.23 or newer, which introduced the setting. An older pnpm
+    # ignores it silently and leaves the virtual store in the tree, which is
+    # worse than leaving both in the tree: the store above is still redirected,
+    # so the two end up on different filesystems and every package becomes a
+    # full copy written into the host checkout.
+    #
+    # Both projects this kit serves pin an older pnpm today, so both are in
+    # that state until their `packageManager` moves. Tracked downstream; it is
+    # a one-line change in each of those repositories, not something this kit
+    # can do, because the pin is what pnpm obeys.
+    PNPM_CONFIG_VIRTUAL_STORE_TYPE: global
+
     # Nothing here should ever act on an npm self-update notice.
     NPM_CONFIG_UPDATE_NOTIFIER: "false"
 
@@ -101,17 +190,15 @@ setup:
         # Bump these by hand. Each is checksum-verified below against the
         # publisher's own manifest, so a bad pin fails loudly rather than
         # installing something unexpected.
-        NODE_VERSION=24.20.0        # LTS Krypton; projects declare engines node 24.x
-        PNPM_VERSION=11.22.0        # baseline only; packageManager wins per project.
-                                    # Published 2026-08-15, so it has cleared the 5-day
-                                    # release-age window this setup enforces everywhere
-                                    # else. Check that before bumping: pnpm's own
-                                    # self-download is not subject to the window.
-        # sha256 of the release tarballs, pinned here rather than fetched: pnpm
-        # publishes no checksum manifest alongside them. Recompute on bump with
-        #   curl -fsSL .../pnpm-linux-<arch>.tar.gz | shasum -a 256
-        PNPM_SHA256_arm64=f1426231f365bdfd46c15fa3d1211c3936ee2c4e557afd304f6c66dbf1b2a8bf
-        PNPM_SHA256_x64=4c592fa410eb23b69691a9efb9bf21c87c15b3e9d88c6ec8acdd354a0eb8de71
+        MISE_VERSION=v2026.8.14     # installs Node and pnpm; versions live in
+                                    # files/home/.config/mise/config.toml.
+                                    # Published 2026-08-26, so it has cleared the
+                                    # 5-day release-age window this setup enforces
+                                    # everywhere else. Check that before bumping:
+                                    # mise cuts a release most days, and the newest
+                                    # tag is routinely hours old. Neither this
+                                    # download nor mise's own installs are subject
+                                    # to the window, so it is enforced by hand here.
         GH_VERSION=2.98.0           # image ships 2.46, which predates several flags in use
         TRUFFLEHOG_VERSION=3.97.1   # league-service security:scan; its own script says
                                     # `brew install`, which cannot work on Linux
@@ -124,13 +211,11 @@ setup:
         export DEBIAN_FRONTEND=noninteractive
         export PATH="/usr/local/bin:$PATH"
 
-        # Selects the pnpm hash by name rather than by building a variable
-        # reference and eval-ing it. NODE_ARCH is constrained to two values
-        # right here so the eval was not reachable with anything hostile, but
-        # this runs as root and a case statement costs nothing.
+        # mise names its release assets linux-arm64 / linux-x64, the same pair
+        # as Node; gh and trufflehog use the Go spelling.
         case "$(dpkg --print-architecture)" in
-          arm64) NODE_ARCH=arm64; GO_ARCH=arm64; PNPM_SHA256="$PNPM_SHA256_arm64" ;;
-          amd64) NODE_ARCH=x64;   GO_ARCH=amd64; PNPM_SHA256="$PNPM_SHA256_x64" ;;
+          arm64) MISE_ARCH=arm64; GO_ARCH=arm64 ;;
+          amd64) MISE_ARCH=x64;   GO_ARCH=amd64 ;;
           *) echo "dev-tools: unsupported architecture $(dpkg --print-architecture)" >&2; exit 1 ;;
         esac
 
@@ -169,74 +254,138 @@ setup:
         soft apt-get install -y --no-install-recommends \
           xz-utils wget file tree unzip shellcheck
 
-        # --- Node 24 ----------------------------------------------------
-        # Straight from nodejs.org rather than NodeSource: deb.nodesource.com is
-        # not in the sbx allowlist (it answers 403 through the proxy) whereas
-        # nodejs.org is. Unpacked over /usr/local, which precedes /usr/bin on
-        # PATH, so the distro's Node 22 is shadowed rather than removed; nothing
-        # in the base image is disturbed.
+        # --- a C toolchain for native modules ---------------------------
+        # The image has make and python3 but no compiler at all, so anything
+        # node-gyp has to build from source dies at `make: cc: No such file or
+        # directory`. A project this kit serves hits this through sqlite3,
+        # which publishes no prebuilt for this platform and which its
+        # pnpm-workspace.yaml explicitly allows to build; the symptom is 14
+        # tests failing with
+        # `Could not locate the bindings file ... node_sqlite3.node`, several
+        # hundred tests into a run, which reads like a broken install rather
+        # than a missing toolchain.
+        #
+        # The narrow set rather than build-essential, which additionally pulls
+        # dpkg-dev for Debian packaging that node-gyp never calls. make and
+        # coreutils are already here. python3-dev and pkg-config are in because
+        # most other node-gyp packages want them, and discovering that one
+        # module at a time is the failure this is meant to end.
+        #
+        # soft() like gh and trufflehog: a missing compiler should degrade the
+        # sandbox, not prevent it existing. That is the opposite of libatomic1
+        # above, which pnpm itself needs to start.
+        soft apt-get install -y --no-install-recommends \
+          gcc g++ libc6-dev python3-dev pkg-config
+
+        # Proved rather than assumed, because soft() means the install above can
+        # fail quietly and a compiler that is absent, or present and broken,
+        # looks identical until a native module tries to build. Every other
+        # check in this file fails at creation rather than at first use, and
+        # this one costs milliseconds. CC_OK is reported in the closing summary.
+        CC_OK=no
+        cc_dir="$(mktemp -d)"
+        printf 'int main(void){return 0;}\n' > "$cc_dir/t.c"
+        if cc -o "$cc_dir/t" "$cc_dir/t.c" 2>/dev/null && "$cc_dir/t"; then
+          CC_OK=yes
+        fi
+        rm -rf "$cc_dir"
+
+        # --- mise, and Node and pnpm through it -------------------------
+        # Node and pnpm used to be installed here by hand: a nodejs.org tarball
+        # unpacked over /usr/local, and the pnpm standalone release with its
+        # sha256 pinned inline because pnpm publishes no manifest beside it.
+        # Both are now mise's job, for one reason that is not tidiness.
+        #
+        # A project pins pnpm through `packageManager`, and pnpm 11 self-manages:
+        # if the running pnpm is not that exact version it fetches one from the
+        # npm registry as `@pnpm/exe` and re-executes it. That package ships a 34
+        # byte placeholder in place of its binary and relies on a `preinstall`
+        # script to hardlink the real one over it, so when the step does not run
+        # every pnpm invocation in the project dies with
+        # `pnpm: 1: This: not found`. It is also a binary this kit never pinned
+        # or verified, which made the header's "nothing runs through npm" claim
+        # untrue in practice.
+        #
+        # There is no switch to turn self-management off; pnpm 11 removed it. But
+        # it does not trigger at all when the running version already matches the
+        # pin. Verified with pnpm 11.24.0 against a project pinning 11.24.0: no
+        # `@pnpm/exe` appears in the store. So mise reading `packageManager` and
+        # installing exactly that version does not work around the placeholder,
+        # it means the package is never fetched.
+        #
+        # mise resolves both tools with checksum verification of its own:
+        # `core:node` against nodejs.org's SHASUMS256.txt, and `aqua:pnpm/pnpm`
+        # against aqua's registry. Neither goes through npm.
         tmp="$(mktemp -d)"
         trap 'rm -rf "$tmp"' EXIT
-        node_file="node-v${NODE_VERSION}-linux-${NODE_ARCH}.tar.gz"
-        curl -fsSL -o "$tmp/$node_file" \
-          "https://nodejs.org/dist/v${NODE_VERSION}/${node_file}"
+        mise_file="mise-${MISE_VERSION}-linux-${MISE_ARCH}.tar.gz"
+        curl -fsSL -o "$tmp/$mise_file" \
+          "https://github.com/jdx/mise/releases/download/${MISE_VERSION}/${mise_file}"
         curl -fsSL -o "$tmp/SHASUMS256.txt" \
-          "https://nodejs.org/dist/v${NODE_VERSION}/SHASUMS256.txt"
+          "https://github.com/jdx/mise/releases/download/${MISE_VERSION}/SHASUMS256.txt"
 
-        # Exact filename compare, not a grep pattern. Version strings are full
-        # of dots and a dot is a regex wildcard, so a pattern built for
-        # 24.20.0 also matches a row for 24X20X0; the manifest lists several
-        # artifacts per release and matching the wrong row would verify the
-        # wrong file. An absent name leaves node_sum empty and aborts, so a
-        # renamed asset stops the install rather than skipping the check.
-        node_sum=""
+        # Exact filename compare rather than a grep pattern, for the reason the
+        # Node install used to give here: a version string is full of dots and a
+        # dot is a regex wildcard, so a pattern built for one release also
+        # matches a row for another, and the manifest lists several artifacts.
+        # mise writes its names with a leading ./, which is stripped first. An
+        # absent name leaves mise_sum empty and aborts.
+        mise_sum=""
         while read -r h n; do
-          if [ "$n" = "$node_file" ]; then node_sum="$h"; break; fi
+          n="${n#./}"
+          if [ "$n" = "$mise_file" ]; then mise_sum="$h"; break; fi
         done < "$tmp/SHASUMS256.txt"
-        [ -n "$node_sum" ] || { echo "dev-tools: $node_file absent from SHASUMS256.txt" >&2; exit 1; }
-        printf '%s  %s\n' "$node_sum" "$tmp/$node_file" | sha256sum -c - >/dev/null
+        [ -n "$mise_sum" ] || { echo "dev-tools: $mise_file absent from SHASUMS256.txt" >&2; exit 1; }
+        printf '%s  %s\n' "$mise_sum" "$tmp/$mise_file" | sha256sum -c - >/dev/null
 
-        tar -xzf "$tmp/$node_file" -C /usr/local --strip-components=1 \
-          --exclude=CHANGELOG.md --exclude=LICENSE --exclude=README.md
+        tar -xzf "$tmp/$mise_file" -C "$tmp"
+        install -m 755 "$tmp/mise/bin/mise" /usr/local/bin/mise
+        /usr/local/bin/mise --version >/dev/null
 
-        # --- pnpm -------------------------------------------------------
-        # The standalone release, which is a self-contained bundle: no corepack,
-        # no npm, nothing fetched from a package registry at install time.
+        # One shared tool directory rather than the agent's home, so the install
+        # below runs once at creation instead of on the agent's first command.
+        # Agent-owned because a project pinning a version that is not here has
+        # to be able to install it: mise does that on demand, as the agent.
+        install -d -o agent -g agent -m 755 /usr/local/share/mise
+        install -d -o agent -g agent -m 755 /home/agent/.config /home/agent/.config/mise
+
+        # ~/.config/mise/config.toml ships as a static file and holds the
+        # baseline versions. Run as the agent, not root: everything mise writes
+        # here belongs to the user who will run the tools, and the config that
+        # names the versions is in the agent's home, not root's.
+        su -s /bin/sh agent -c '
+          set -eu
+          export MISE_DATA_DIR=/usr/local/share/mise
+          mise install
+          mise reshim
+        '
+
+        # Symlinks rather than putting the shim directory on PATH, which a kit
+        # cannot do without rewriting PATH wholesale. Each shim resolves the
+        # version from the directory it is invoked in, so `pnpm` in a project
+        # pinning 11.7.0 is 11.7.0 and the same binary elsewhere is the
+        # baseline.
+        for t in node npm npx pnpm pnpx; do
+          if [ -e "/usr/local/share/mise/shims/$t" ]; then
+            ln -sf "/usr/local/share/mise/shims/$t" "/usr/local/bin/$t"
+          fi
+        done
+
+        # Exercised as the agent, and through the symlinks just made, because
+        # that is the only combination that proves anything. A shim asked for a
+        # version by root fails with "No version is set for shim", since the
+        # config naming the versions lives in the agent's home: verifying as
+        # root would fail on a perfectly good install.
         #
-        # Corepack was the obvious route and is the wrong one. It is deprecated
-        # upstream and slated to leave the Node distribution, the image's own
-        # copy (0.24.0) is too old to fetch a modern pnpm, and reaching a usable
-        # one meant taking it from the Node tarball and then working around
-        # `corepack enable` targeting root-owned /usr/bin. pnpm has since
-        # absorbed the one feature corepack was needed for.
-        #
-        # Node still bundles its own corepack, so /usr/local/bin/corepack exists;
-        # it is left alone rather than carved out of the distribution. Nothing
-        # reaches it, because /usr/local/bin/pnpm is the symlink below.
-        #
-        # That feature is manage-package-manager-versions, on by default: pnpm
-        # reads packageManager from package.json and switches itself to that
-        # exact version, caching it under ~/.cache/pnpm. So one pinned binary
-        # still gives each project the version it asks for:
-        #
-        #   /tmp            -> 11.22.0   (PNPM_VERSION above)
-        #   league-bot      -> 11.17.0   (its packageManager)
-        #   league-service  -> 11.7.0    (its packageManager)
-        #
-        # Unpacked whole into /usr/local/lib/pnpm rather than dropping the
-        # launcher on PATH by itself: it resolves dist/pnpm.mjs relative to its
-        # own location, so the sibling dist/ tree has to come with it.
-        curl -fsSL -o "$tmp/pnpm.tar.gz" \
-          "https://github.com/pnpm/pnpm/releases/download/v${PNPM_VERSION}/pnpm-linux-${NODE_ARCH}.tar.gz"
-        printf '%s  %s\n' "$PNPM_SHA256" "$tmp/pnpm.tar.gz" | sha256sum -c - >/dev/null
-        rm -rf /usr/local/lib/pnpm
-        mkdir -p /usr/local/lib/pnpm
-        tar -xzf "$tmp/pnpm.tar.gz" -C /usr/local/lib/pnpm
-        chmod 755 /usr/local/lib/pnpm/pnpm
-        ln -sf /usr/local/lib/pnpm/pnpm /usr/local/bin/pnpm
-        # Fail creation here rather than hand back a sandbox whose pnpm is a
-        # broken symlink or is missing a shared library.
-        /usr/local/bin/pnpm --version >/dev/null
+        # Fails creation rather than handing back a sandbox whose toolchain is a
+        # broken symlink or an empty shim directory.
+        su -s /bin/sh agent -c '
+          set -eu
+          export MISE_DATA_DIR=/usr/local/share/mise
+          node --version >/dev/null
+          npm --version >/dev/null
+          pnpm --version >/dev/null
+        '
 
         # $PNPM_HOME/bin is where pnpm puts globally installed binaries, and it
         # errors out if that directory is not on PATH. Never run pnpm as root
@@ -322,14 +471,15 @@ setup:
         # last command and head succeeds regardless. That is too subtle to rely
         # on: anyone adding `set -o pipefail` here would turn this block into a
         # failure path, which is exactly what soft() exists to prevent.
-        node --version || true
-        pnpm --version || true
+        su -s /bin/sh agent -c 'export MISE_DATA_DIR=/usr/local/share/mise; node --version' || true
+        su -s /bin/sh agent -c 'export MISE_DATA_DIR=/usr/local/share/mise; pnpm --version' || true
+        printf 'cc works: %s\n' "$CC_OK" || true
         gh --version 2>/dev/null | head -1 || true
         trufflehog --version 2>&1 | head -1 || true
 
   startup:
     - user: "0"
-      description: Give the sandbox its own node_modules on bind-mounted workspaces
+      description: Hand the pnpm volume to the agent
       command:
         - "sh"
         - "-c"
@@ -341,109 +491,31 @@ setup:
           trap 'exit 0' EXIT
           set -e
 
-          [ -n "${WORKSPACE_DIR:-}" ] || exit 0
-
-          # Only bind-mounted workspaces need this. A --clone sandbox already
-          # has its workspace on a container volume, so its node_modules is
-          # private already and mounting over it would only hide the clone's
-          # own files.
-          [ "$(findmnt -no FSTYPE --target "$WORKSPACE_DIR" 2>/dev/null)" = "virtiofs" ] || exit 0
-
-          # Deliberately a plain directory on the container's writable layer, not
-          # a kit volume. volumes[].path takes no size and sbx gives one 488M,
-          # which ENOSPCs partway through a real install; the overlay has ~18G.
-          # The lifecycle is the one we want anyway: it survives stop/start and
-          # dies with `sbx rm`, exactly like the rest of the container.
-          STORE=/var/lib/sbx-dev-tools
-          mkdir -p "$STORE"
-
-          # The workspace is the host's checkout, so its node_modules holds
-          # macOS binaries: @esbuild/darwin-arm64, @turbo/darwin-arm64,
-          # lightningcss-darwin-arm64 and friends. Linux cannot run them, so
-          # every install in here re-resolved the whole tree over virtiofs and
-          # wrote the result back onto the host, corrupting it in both
-          # directions. Each of these directories gets a private ext4 directory
-          # instead: the host tree is untouched and invisible, and the agent
-          # gets a normal Linux install.
+          # The volume declared above mounts root-owned whatever `mode` says,
+          # so the agent cannot write to it until this runs.
           #
-          # .pnpm-store is in the list for a second reason. pnpm hardlinks out
-          # of the store into node_modules, which only works within one
-          # filesystem; leaving the store on virtiofs while node_modules moved
-          # to the overlay turned every package into a full copy, which is both
-          # slow and what actually exhausted the space. Mounting both from the
-          # same place restores hardlinking.
+          # Guarded on the current owner rather than run unconditionally. This
+          # re-runs on every container start, and `chown -R` costs one syscall
+          # per file: harmless on the empty volume of a first start, and a walk
+          # of the whole store by the time it holds a real install.
           #
-          # Every node_modules in the workspace, not just the root one, because
-          # a pnpm workspace puts a symlink farm in each package and pnpm
-          # rewrites those on install.
-          #
-          # The candidate list is derived from committed package.json files, not
-          # only from directories that already exist. Mounting solely over
-          # existing node_modules works on a checkout that has been installed
-          # before and silently does nothing on a clean clone, where there is no
-          # node_modules yet: the isolation would cover nothing, and the first
-          # install writes onto the host tree. In practice it does not even get
-          # that far, because pnpm creates .pnpm-store and then fails ENOENT
-          # against the bind mount. A package.json is committed, so it is there
-          # either way and marks where a node_modules is going to appear.
-          #
-          # Existing directories are unioned in to catch any with no
-          # package.json beside them. Depth 4 covers packages/<name>/ and the
-          # .claude/worktrees/<name>/ trees; -prune keeps the search out of the
-          # node_modules trees themselves.
-          #
-          # Built up in a temp file rather than a brace group piped into the
-          # loop. sbx materialises a startup command as a triple-nested
-          # single-quoted string (dispatcher -> su -c -> sh -c), and a group
-          # containing its own while loop does not survive that escaping: the
-          # script dies before its first statement and the dispatcher still
-          # logs "ok", because the EXIT trap forces status 0. Flat commands and
-          # redirections come through intact.
-          LIST=$(mktemp)
-          MANIFESTS=$(mktemp)
+          # This replaced a block that walked the workspace and bind-mounted a
+          # private directory over every node_modules it found or expected.
+          # That approach is gone: the volume plus PNPM_CONFIG_STORE_DIR and
+          # PNPM_CONFIG_VIRTUAL_STORE_TYPE keep pnpm's output off the workspace
+          # without mounting anything, so there is nothing left to fail
+          # silently and nothing for a mid-session worktree to miss.
+          # The recursive pass, for the first start after creation and for a
+          # volume that was replaced between starts.
+          if [ "$(stat -c %U /var/lib/pnpm)" != agent ]; then
+            chown -R agent:agent /var/lib/pnpm
+          fi
 
-          find "$WORKSPACE_DIR" -maxdepth 4 -name node_modules -prune \
-               -o -name package.json -type f -print > "$MANIFESTS" 2>/dev/null || true
-
-          while IFS= read -r manifest; do
-            echo "${manifest%/package.json}/node_modules" >> "$LIST"
-          done < "$MANIFESTS"
-
-          echo "$WORKSPACE_DIR/.pnpm-store" >> "$LIST"
-
-          find "$WORKSPACE_DIR" -maxdepth 4 \
-               \( -name node_modules -o -name .pnpm-store \) -type d -prune \
-               >> "$LIST" 2>/dev/null || true
-
-          sort -u "$LIST" > "$MANIFESTS"
-
-          while IFS= read -r dir; do
-            # A bind mount needs its mountpoint to exist, and on a clean
-            # checkout it does not, so create it first. An empty directory is
-            # all the host ever sees, rather than a Linux install. It outlives
-            # `sbx rm`, where a later host-side install simply fills it in.
-            #
-            # This has to come before the filesystem test below, not after:
-            # `findmnt --target` prints nothing for a path that does not exist
-            # (it does not fall back to the parent mount), so testing first
-            # skips every candidate that has yet to be created, which on a
-            # clean checkout is all of them.
-            [ -d "$dir" ] || mkdir -p "$dir" 2>/dev/null || continue
-
-            # Idempotent: startup commands re-run on every container start, and
-            # a second bind mount over the same path would just stack. Anything
-            # already isolated reads as overlay rather than virtiofs and is
-            # skipped here.
-            [ "$(findmnt -no FSTYPE --target "$dir" 2>/dev/null)" = "virtiofs" ] || continue
-
-            rel=$(echo "${dir#"$WORKSPACE_DIR"/}" | tr / _)
-            [ -n "$rel" ] || rel=root
-
-            back="$STORE/$rel"
-            mkdir -p "$back"
-            chown agent:agent "$back"
-
-            mount --bind "$back" "$dir" 2>/dev/null || true
-          done < "$MANIFESTS"
-
-          rm -f "$LIST" "$MANIFESTS"
+          # Then the store directory on its own, unconditionally. The guard
+          # above reads only the volume root, so a store directory that is
+          # missing under an already-owned root gets recreated by root here and
+          # then skipped, leaving the agent unable to write its own store. This
+          # is one chown rather than a walk, so it is cheap enough to run every
+          # time and does not reintroduce what the guard exists to avoid.
+          mkdir -p /var/lib/pnpm/store
+          chown agent:agent /var/lib/pnpm/store
