@@ -273,9 +273,11 @@ never has to install its own. The stock image ships Node 22, no pnpm and gh
 `corepack enable` and hand-rolling a pnpm shim in its scratch directory. In one
 measured transcript that took 27 of 89 bash calls.
 
-pnpm comes from its standalone release with a pinned sha256, not from corepack
-or npm, and its own `manage-package-manager-versions` gives each project the
-version its `packageManager` field asks for.
+Node and pnpm come from mise, not corepack or npm, and mise reads the same
+`packageManager` field so each project gets the version it asks for. That is
+what stops pnpm's own self-management fetching a second, unpinned pnpm from the
+npm registry, which shipped a placeholder binary and broke every pnpm call in
+the project.
 
 It also carries the host's supply-chain policy in (`minimumReleaseAge`,
 `minimumReleaseAgeStrict`, `blockExoticSubdeps`) rather than leaving it to

@@ -1,0 +1,33 @@
+# File:    config.toml
+# Created: 2026-09-03
+# License: MIT
+#
+# Copyright (c) 2026 Michael Portner
+#
+# The sandbox's baseline toolchain. mise reads this from ~/.config/mise, so it
+# applies everywhere the agent works and is overridden by anything a project
+# declares for itself.
+
+[tools]
+# LTS Krypton; both league projects declare engines.node 24.x.
+node = "24.20.0"
+
+# A baseline only. `packageManager` wins per project, through the setting
+# below. It has to be 11.23 or newer for PNPM_CONFIG_VIRTUAL_STORE_TYPE to
+# mean anything, which is what keeps the virtual store off the workspace mount.
+pnpm = "11.24.0"
+
+[settings]
+# The reason this kit uses mise at all.
+#
+# pnpm 11 self-manages: in a project pinning `packageManager: pnpm@X`, a pnpm
+# that is not X fetches one from the npm registry as `@pnpm/exe` and re-execs
+# it. That package ships a placeholder binary and needs a lifecycle script to
+# put the real one in place, and when that does not happen every pnpm call in
+# the project fails with `pnpm: 1: This: not found`.
+#
+# This makes mise read the same `packageManager` field and install that exact
+# version, so the running pnpm already is the pinned one and pnpm never reaches
+# for the registry copy. Verified: pnpm 11.24.0 in a project pinning 11.24.0
+# downloads no `@pnpm/exe` at all.
+idiomatic_version_file_enable_tools = ["pnpm"]

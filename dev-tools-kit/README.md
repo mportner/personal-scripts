@@ -37,56 +37,132 @@ twelve minutes, before any work started. A second session spent 8 of 18.
 
 | | Version | Source | Verified by |
 | --- | --- | --- | --- |
-| Node | 24.20.0 | nodejs.org tarball → `/usr/local` | `SHASUMS256.txt` |
-| npm | 11.19.0 | bundled with Node | (as above) |
-| pnpm | 11.22.0 baseline, per project thereafter | github.com release, standalone bundle | sha256 pinned in `spec.yaml` |
+| mise | 2026.9.1 | github.com release | `SHASUMS256.txt` |
+| Node | 24.20.0 | mise `core:node` → nodejs.org | `SHASUMS256.txt` |
+| npm | bundled with Node | (as above) | (as above) |
+| pnpm | 11.24.0 baseline, per project thereafter | mise `aqua:pnpm/pnpm` → github.com release | aqua registry |
 | gh | 2.98.0 | github.com release | `gh_*_checksums.txt` |
 | trufflehog | 3.97.1 | github.com release | `trufflehog_*_checksums.txt` |
 | shellcheck, xz-utils, wget, file, tree, unzip | distro | apt | apt signatures |
 | Playwright chromium system libs | distro | apt | apt signatures |
 
-Node unpacks over `/usr/local`, which precedes `/usr/bin` on the sandbox's PATH,
-so the distro's Node 22 is shadowed rather than removed and nothing in the base
-image is disturbed.
+mise installs into one shared directory, `/usr/local/share/mise`, with
+`MISE_DATA_DIR` pointing at it so the agent's shims find it. `node`, `npm`,
+`npx`, `pnpm` and `pnpx` are symlinked from there into `/usr/local/bin`, which
+precedes `/usr/bin` on PATH, so the distro's Node 22 is shadowed rather than
+removed and nothing in the base image is disturbed. Symlinks rather than
+putting the shim directory on PATH, which a kit cannot do without rewriting
+PATH wholesale.
 
 `docker` and `docker compose` are already in the base image (29.7.1 / v5.4.0)
 and need nothing from this kit.
 
-## pnpm: standalone, not corepack and not npm
+## pnpm: mise, not corepack and not npm
 
 The two projects pin different pnpm versions, league-bot `pnpm@11.17.0` and
 league-service `pnpm@11.7.0`, so a single global pnpm would be wrong for at
-least one of them. Corepack is the usual answer to that and is the wrong one
-here: it is deprecated upstream and on its way out of the Node distribution,
-the base image's copy (0.24.0) is too old to fetch a modern pnpm, and reaching
-a usable one meant lifting it out of the Node tarball and then working around
-`corepack enable` targeting root-owned `/usr/bin`.
+least one of them. Corepack is the usual answer and is the wrong one here: it
+is deprecated upstream and on its way out of the Node distribution, and the
+base image's copy (0.24.0) is too old to fetch a modern pnpm.
 
-pnpm has since absorbed the only feature corepack was needed for.
-`manage-package-manager-versions` is on by default: pnpm reads `packageManager`
-and switches itself to that exact version, caching it under `~/.cache/pnpm`. So
-one pinned binary still gives every project the version it asks for:
+The obvious alternative is to install one pnpm and let pnpm's own
+`manage-package-manager-versions` do the rest, since it reads `packageManager`
+and switches itself to that exact version. That is what this kit used to do,
+and it is what broke.
+
+### What went wrong
+
+pnpm does not "switch itself" in place. It fetches a **second** pnpm from the
+npm registry as `@pnpm/exe` and re-executes it, into the project's store. That
+package ships a 34 byte placeholder where its binary should be:
 
 ```
-$ cd /tmp           && pnpm --version   → 11.22.0    (PNPM_VERSION in spec.yaml)
-$ cd league-bot     && pnpm --version   → 11.17.0    (its packageManager)
-$ cd league-service && pnpm --version   → 11.7.0     (its packageManager)
+$ node -e 'console.log(require("@pnpm/exe/package.json").scripts.preinstall)'
+node setup.js
 ```
 
-The binary is the standalone release tarball from GitHub, which is a
-self-contained bundle: no corepack, no npm, and nothing fetched from a package
-registry at install time. pnpm publishes no checksum manifest beside it, so the
-sha256 is pinned in `spec.yaml` for both architectures rather than fetched.
-Recompute on bump:
+`setup.js` resolves the platform package (`@pnpm/linux-arm64` here) and
+hardlinks its 146 MB binary over the placeholder. When that step does not
+complete, the placeholder is what runs, and every pnpm invocation in the
+project dies with `sh` reporting its first line of prose:
 
-```bash
-curl -fsSL https://github.com/pnpm/pnpm/releases/download/v<VER>/pnpm-linux-arm64.tar.gz | shasum -a 256
+```
+pnpm: 1: This: not found
 ```
 
-It unpacks whole into `/usr/local/lib/pnpm` with a symlink onto PATH, because
-the launcher resolves `dist/pnpm.mjs` relative to its own location and needs the
-sibling `dist/` tree beside it. Node still bundles its own corepack, so
-`/usr/local/bin/corepack` exists; nothing reaches it.
+That binary is also one this kit never pinned or verified, which made the claim
+that nothing goes through npm untrue in practice.
+
+There is no way to turn the behaviour off. pnpm 11 removed the setting, so
+`manage-package-manager-versions` in `.npmrc`, on the command line, as an
+environment variable, and in `/usr/local/lib/pnpm/dist/pnpmrc` are all inert.
+
+### What mise changes
+
+Self-management does not trigger when the running pnpm **already is** the
+pinned version. Verified with pnpm 11.24.0 in a project pinning
+`pnpm@11.24.0`:
+
+```
+$ pnpm install --store-dir ./store
+Done in 495ms using pnpm v11.24.0
+$ find ./store -maxdepth 6 -path '*@pnpm/exe*'
+   (empty)
+```
+
+The same test pinning 11.17.0 does download it. So this is not a workaround for
+the placeholder: the package is never fetched.
+
+mise is told to read the same field:
+
+```toml
+# files/home/.config/mise/config.toml
+[tools]
+node = "24.20.0"
+pnpm = "11.24.0"
+
+[settings]
+idiomatic_version_file_enable_tools = ["pnpm"]
+```
+
+and resolves each project's pin from its own `package.json`:
+
+```
+$ cd league-service && mise current pnpm
+11.7.0
+```
+
+so the shim on PATH is that version and pnpm has nothing to reach for. The
+baseline in `[tools]` covers everything outside a project.
+
+mise verifies what it installs. Observed at sandbox creation:
+
+```
+mise node@24.20.0    [2/3] checksum node-v24.20.0-linux-arm64.tar.gz
+mise pnpm@11.24.0    [2/3] verify GitHub artifact attestations
+mise pnpm@11.24.0    [2/3] ✓ GitHub artifact attestations verified
+mise pnpm@11.24.0    [2/3] checksum pnpm-linux-arm64.tar.gz
+```
+
+`core:node` checks nodejs.org's `SHASUMS256.txt`; `aqua:pnpm/pnpm` resolves to
+pnpm's own GitHub release rather than the npm registry and checks both its
+build provenance attestation and its checksum, which is stronger than the
+hand-pinned sha256 it replaces. mise itself is pinned by version in `spec.yaml`
+and checked against the `SHASUMS256.txt` published with its release.
+
+`mise` is also an [official kit](https://github.com/docker/sbx-kits-contrib/tree/main/mise)
+in `docker/sbx-kits-contrib`. This kit installs the binary itself rather than
+stacking that one, because it needs the tools installed at creation time and
+the contrib kit deliberately ships no toolchain.
+
+### No trust configuration
+
+mise refuses to evaluate an untrusted config, and does so silently, which would
+be a problem worth handling. It is not one here: the trust gate covers the
+parts of a config that execute, `[env]` and `[tasks]`, not tool versions. An
+untrusted `mise.toml` and an untrusted `package.json` both still resolve their
+pin. Nothing in this kit reads project `[env]`, because the two `PNPM_CONFIG_`
+settings below cover every project at once.
 
 `PNPM_HOME` is `/home/agent/.local`, not the more obvious
 `/home/agent/.local/share/pnpm`, because pnpm derives its global bin directory
@@ -111,10 +187,11 @@ settings to `pnpm-workspace.yaml`. Everything else, a scratch install, a
 `pnpm dlx`, a repository that has not adopted the policy yet, runs on pnpm's
 permissive defaults.
 
-Nothing this kit installs goes through npm, npx or corepack. The four tools it
-downloads directly (Node, pnpm, `gh`, trufflehog) are pinned to exact versions
-and checked against a checksum, either the publisher's own manifest or, for
-pnpm, a hash pinned in `spec.yaml`. Everything else is an apt package: signed
+Nothing this kit installs goes through npm, npx or corepack, which became true
+rather than aspirational when `packageManager` stopped pulling a second pnpm
+off the registry. The tools it downloads (mise, `gh`, trufflehog, and Node and
+pnpm through mise) are pinned to exact versions and checked against the
+publisher's own checksum manifest. Everything else is an apt package: signed
 by the distro and versioned by it, so those track the Ubuntu repository rather
 than a pin here. That constraint is why the
 Playwright system libraries are apt-installed from Playwright's own list rather
@@ -126,10 +203,9 @@ Note that npm counts `min-release-age` in **days** and pnpm counts
 `minimumReleaseAge` in **minutes**, so the `5` in `.npmrc` and the `7200` in
 `config.yaml` are the same five-day window rather than a disagreement.
 
-`PNPM_VERSION` is the one pin needing a manual check on bump, because pnpm's own
-self-download is not subject to the window. 11.22.0 was published 2026-08-15,
-comfortably outside it; 11.24.0 was three days old at the time of writing and
-would have violated it.
+The pnpm baseline in `config.toml` is the one pin needing a manual check on
+bump, because mise's install is not subject to the release-age window that
+governs everything a project installs.
 
 ## Keeping pnpm off the workspace mount
 

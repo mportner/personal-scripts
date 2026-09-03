@@ -15,6 +15,10 @@
 # a pnpm shim in its scratch directory. Measured on a real session: 27 of 89
 # bash calls went to toolchain wrangling before any work started.
 #
+# Node and pnpm come from mise, which resolves each project's pinned version
+# from its own package.json. See the install step for why that matters beyond
+# convenience.
+#
 # Stacks with claude-config rather than replacing it:
 #   sbx create claude \
 #     --kit ~/personal-scripts/claude-config-kit \
@@ -25,8 +29,13 @@
 # blockExoticSubdeps applied globally rather than only inside repositories that
 # commit them. Every direct download is a pinned version checked against the
 # publisher's own checksum manifest; the supporting packages come from apt,
-# signed by the distro and versioned by it rather than pinned here. Nothing
-# runs through npm or npx.
+# signed by the distro and versioned by it rather than pinned here.
+#
+# Nothing here runs through npm or npx, and that is now true rather than
+# aspirational. It was not before: `packageManager` made pnpm fetch a second,
+# unpinned pnpm from the npm registry and re-execute it. mise installing the
+# pinned version is what stops that, because self-management does not trigger
+# when the running pnpm already matches the pin.
 #
 # Roughly 30s at sandbox creation, most of it the Playwright system libraries;
 # about 15s with SBX_DEV_TOOLS_PLAYWRIGHT=0 (see below) to skip those. Measured
@@ -36,7 +45,7 @@ kind: mixin
 name: dev-tools
 version: "0.1.0"
 displayName: Dev Toolchain
-description: Installs Node 24, standalone pnpm, current gh, and project tooling.
+description: Installs mise with Node and pnpm, current gh, and project tooling.
 
 # Deliberately beside the kit that installs `gh`, rather than in research-kit
 # where these two sections used to live. They describe how the agent should use
@@ -112,6 +121,18 @@ environment:
     # exit 1.
     PNPM_HOME: /home/agent/.local
 
+    # Where the install step put Node and pnpm. Without this the agent's mise
+    # looks in ~/.local/share/mise, finds nothing, and every shim reinstalls
+    # the toolchain on first use. One shared directory, agent-owned so a
+    # project pinning a version that is not baked in can still install it.
+    MISE_DATA_DIR: /usr/local/share/mise
+
+    # Deliberately no MISE_TRUSTED_CONFIG_PATHS. mise's trust gate covers the
+    # parts of a config that execute (`[env]`, `[tasks]`), not tool versions:
+    # an untrusted mise.toml and an untrusted package.json still resolve their
+    # `packageManager` pin. Nothing here reads project `[env]`, because the two
+    # PNPM_CONFIG_ settings above do that job for every project at once.
+
     # The content-addressable store, moved onto the volume above. Safe to share
     # across every project in the sandbox because it is addressed by content.
     #
@@ -155,17 +176,8 @@ setup:
         # Bump these by hand. Each is checksum-verified below against the
         # publisher's own manifest, so a bad pin fails loudly rather than
         # installing something unexpected.
-        NODE_VERSION=24.20.0        # LTS Krypton; projects declare engines node 24.x
-        PNPM_VERSION=11.22.0        # baseline only; packageManager wins per project.
-                                    # Published 2026-08-15, so it has cleared the 5-day
-                                    # release-age window this setup enforces everywhere
-                                    # else. Check that before bumping: pnpm's own
-                                    # self-download is not subject to the window.
-        # sha256 of the release tarballs, pinned here rather than fetched: pnpm
-        # publishes no checksum manifest alongside them. Recompute on bump with
-        #   curl -fsSL .../pnpm-linux-<arch>.tar.gz | shasum -a 256
-        PNPM_SHA256_arm64=f1426231f365bdfd46c15fa3d1211c3936ee2c4e557afd304f6c66dbf1b2a8bf
-        PNPM_SHA256_x64=4c592fa410eb23b69691a9efb9bf21c87c15b3e9d88c6ec8acdd354a0eb8de71
+        MISE_VERSION=v2026.9.1      # installs Node and pnpm; versions live in
+                                    # files/home/.config/mise/config.toml
         GH_VERSION=2.98.0           # image ships 2.46, which predates several flags in use
         TRUFFLEHOG_VERSION=3.97.1   # league-service security:scan; its own script says
                                     # `brew install`, which cannot work on Linux
@@ -178,13 +190,11 @@ setup:
         export DEBIAN_FRONTEND=noninteractive
         export PATH="/usr/local/bin:$PATH"
 
-        # Selects the pnpm hash by name rather than by building a variable
-        # reference and eval-ing it. NODE_ARCH is constrained to two values
-        # right here so the eval was not reachable with anything hostile, but
-        # this runs as root and a case statement costs nothing.
+        # mise names its release assets linux-arm64 / linux-x64, the same pair
+        # as Node; gh and trufflehog use the Go spelling.
         case "$(dpkg --print-architecture)" in
-          arm64) NODE_ARCH=arm64; GO_ARCH=arm64; PNPM_SHA256="$PNPM_SHA256_arm64" ;;
-          amd64) NODE_ARCH=x64;   GO_ARCH=amd64; PNPM_SHA256="$PNPM_SHA256_x64" ;;
+          arm64) MISE_ARCH=arm64; GO_ARCH=arm64 ;;
+          amd64) MISE_ARCH=x64;   GO_ARCH=amd64 ;;
           *) echo "dev-tools: unsupported architecture $(dpkg --print-architecture)" >&2; exit 1 ;;
         esac
 
@@ -223,74 +233,100 @@ setup:
         soft apt-get install -y --no-install-recommends \
           xz-utils wget file tree unzip shellcheck
 
-        # --- Node 24 ----------------------------------------------------
-        # Straight from nodejs.org rather than NodeSource: deb.nodesource.com is
-        # not in the sbx allowlist (it answers 403 through the proxy) whereas
-        # nodejs.org is. Unpacked over /usr/local, which precedes /usr/bin on
-        # PATH, so the distro's Node 22 is shadowed rather than removed; nothing
-        # in the base image is disturbed.
+        # --- mise, and Node and pnpm through it -------------------------
+        # Node and pnpm used to be installed here by hand: a nodejs.org tarball
+        # unpacked over /usr/local, and the pnpm standalone release with its
+        # sha256 pinned inline because pnpm publishes no manifest beside it.
+        # Both are now mise's job, for one reason that is not tidiness.
+        #
+        # A project pins pnpm through `packageManager`, and pnpm 11 self-manages:
+        # if the running pnpm is not that exact version it fetches one from the
+        # npm registry as `@pnpm/exe` and re-executes it. That package ships a 34
+        # byte placeholder in place of its binary and relies on a `preinstall`
+        # script to hardlink the real one over it, so when the step does not run
+        # every pnpm invocation in the project dies with
+        # `pnpm: 1: This: not found`. It is also a binary this kit never pinned
+        # or verified, which made the header's "nothing runs through npm" claim
+        # untrue in practice.
+        #
+        # There is no switch to turn self-management off; pnpm 11 removed it. But
+        # it does not trigger at all when the running version already matches the
+        # pin. Verified with pnpm 11.24.0 against a project pinning 11.24.0: no
+        # `@pnpm/exe` appears in the store. So mise reading `packageManager` and
+        # installing exactly that version does not work around the placeholder,
+        # it means the package is never fetched.
+        #
+        # mise resolves both tools with checksum verification of its own:
+        # `core:node` against nodejs.org's SHASUMS256.txt, and `aqua:pnpm/pnpm`
+        # against aqua's registry. Neither goes through npm.
         tmp="$(mktemp -d)"
         trap 'rm -rf "$tmp"' EXIT
-        node_file="node-v${NODE_VERSION}-linux-${NODE_ARCH}.tar.gz"
-        curl -fsSL -o "$tmp/$node_file" \
-          "https://nodejs.org/dist/v${NODE_VERSION}/${node_file}"
+        mise_file="mise-${MISE_VERSION}-linux-${MISE_ARCH}.tar.gz"
+        curl -fsSL -o "$tmp/$mise_file" \
+          "https://github.com/jdx/mise/releases/download/${MISE_VERSION}/${mise_file}"
         curl -fsSL -o "$tmp/SHASUMS256.txt" \
-          "https://nodejs.org/dist/v${NODE_VERSION}/SHASUMS256.txt"
+          "https://github.com/jdx/mise/releases/download/${MISE_VERSION}/SHASUMS256.txt"
 
-        # Exact filename compare, not a grep pattern. Version strings are full
-        # of dots and a dot is a regex wildcard, so a pattern built for
-        # 24.20.0 also matches a row for 24X20X0; the manifest lists several
-        # artifacts per release and matching the wrong row would verify the
-        # wrong file. An absent name leaves node_sum empty and aborts, so a
-        # renamed asset stops the install rather than skipping the check.
-        node_sum=""
+        # Exact filename compare rather than a grep pattern, for the reason the
+        # Node install used to give here: a version string is full of dots and a
+        # dot is a regex wildcard, so a pattern built for one release also
+        # matches a row for another, and the manifest lists several artifacts.
+        # mise writes its names with a leading ./, which is stripped first. An
+        # absent name leaves mise_sum empty and aborts.
+        mise_sum=""
         while read -r h n; do
-          if [ "$n" = "$node_file" ]; then node_sum="$h"; break; fi
+          n="${n#./}"
+          if [ "$n" = "$mise_file" ]; then mise_sum="$h"; break; fi
         done < "$tmp/SHASUMS256.txt"
-        [ -n "$node_sum" ] || { echo "dev-tools: $node_file absent from SHASUMS256.txt" >&2; exit 1; }
-        printf '%s  %s\n' "$node_sum" "$tmp/$node_file" | sha256sum -c - >/dev/null
+        [ -n "$mise_sum" ] || { echo "dev-tools: $mise_file absent from SHASUMS256.txt" >&2; exit 1; }
+        printf '%s  %s\n' "$mise_sum" "$tmp/$mise_file" | sha256sum -c - >/dev/null
 
-        tar -xzf "$tmp/$node_file" -C /usr/local --strip-components=1 \
-          --exclude=CHANGELOG.md --exclude=LICENSE --exclude=README.md
+        tar -xzf "$tmp/$mise_file" -C "$tmp"
+        install -m 755 "$tmp/mise/bin/mise" /usr/local/bin/mise
+        /usr/local/bin/mise --version >/dev/null
 
-        # --- pnpm -------------------------------------------------------
-        # The standalone release, which is a self-contained bundle: no corepack,
-        # no npm, nothing fetched from a package registry at install time.
+        # One shared tool directory rather than the agent's home, so the install
+        # below runs once at creation instead of on the agent's first command.
+        # Agent-owned because a project pinning a version that is not here has
+        # to be able to install it: mise does that on demand, as the agent.
+        install -d -o agent -g agent -m 755 /usr/local/share/mise
+        install -d -o agent -g agent -m 755 /home/agent/.config /home/agent/.config/mise
+
+        # ~/.config/mise/config.toml ships as a static file and holds the
+        # baseline versions. Run as the agent, not root: everything mise writes
+        # here belongs to the user who will run the tools, and the config that
+        # names the versions is in the agent's home, not root's.
+        su -s /bin/sh agent -c '
+          set -eu
+          export MISE_DATA_DIR=/usr/local/share/mise
+          mise install
+          mise reshim
+        '
+
+        # Symlinks rather than putting the shim directory on PATH, which a kit
+        # cannot do without rewriting PATH wholesale. Each shim resolves the
+        # version from the directory it is invoked in, so `pnpm` in a project
+        # pinning 11.7.0 is 11.7.0 and the same binary elsewhere is the
+        # baseline.
+        for t in node npm npx pnpm pnpx; do
+          if [ -e "/usr/local/share/mise/shims/$t" ]; then
+            ln -sf "/usr/local/share/mise/shims/$t" "/usr/local/bin/$t"
+          fi
+        done
+
+        # Exercised as the agent, and through the symlinks just made, because
+        # that is the only combination that proves anything. A shim asked for a
+        # version by root fails with "No version is set for shim", since the
+        # config naming the versions lives in the agent's home: verifying as
+        # root would fail on a perfectly good install.
         #
-        # Corepack was the obvious route and is the wrong one. It is deprecated
-        # upstream and slated to leave the Node distribution, the image's own
-        # copy (0.24.0) is too old to fetch a modern pnpm, and reaching a usable
-        # one meant taking it from the Node tarball and then working around
-        # `corepack enable` targeting root-owned /usr/bin. pnpm has since
-        # absorbed the one feature corepack was needed for.
-        #
-        # Node still bundles its own corepack, so /usr/local/bin/corepack exists;
-        # it is left alone rather than carved out of the distribution. Nothing
-        # reaches it, because /usr/local/bin/pnpm is the symlink below.
-        #
-        # That feature is manage-package-manager-versions, on by default: pnpm
-        # reads packageManager from package.json and switches itself to that
-        # exact version, caching it under ~/.cache/pnpm. So one pinned binary
-        # still gives each project the version it asks for:
-        #
-        #   /tmp            -> 11.22.0   (PNPM_VERSION above)
-        #   league-bot      -> 11.17.0   (its packageManager)
-        #   league-service  -> 11.7.0    (its packageManager)
-        #
-        # Unpacked whole into /usr/local/lib/pnpm rather than dropping the
-        # launcher on PATH by itself: it resolves dist/pnpm.mjs relative to its
-        # own location, so the sibling dist/ tree has to come with it.
-        curl -fsSL -o "$tmp/pnpm.tar.gz" \
-          "https://github.com/pnpm/pnpm/releases/download/v${PNPM_VERSION}/pnpm-linux-${NODE_ARCH}.tar.gz"
-        printf '%s  %s\n' "$PNPM_SHA256" "$tmp/pnpm.tar.gz" | sha256sum -c - >/dev/null
-        rm -rf /usr/local/lib/pnpm
-        mkdir -p /usr/local/lib/pnpm
-        tar -xzf "$tmp/pnpm.tar.gz" -C /usr/local/lib/pnpm
-        chmod 755 /usr/local/lib/pnpm/pnpm
-        ln -sf /usr/local/lib/pnpm/pnpm /usr/local/bin/pnpm
-        # Fail creation here rather than hand back a sandbox whose pnpm is a
-        # broken symlink or is missing a shared library.
-        /usr/local/bin/pnpm --version >/dev/null
+        # Fails creation rather than handing back a sandbox whose toolchain is a
+        # broken symlink or an empty shim directory.
+        su -s /bin/sh agent -c '
+          set -eu
+          node --version >/dev/null
+          pnpm --version >/dev/null
+        '
 
         # $PNPM_HOME/bin is where pnpm puts globally installed binaries, and it
         # errors out if that directory is not on PATH. Never run pnpm as root
@@ -376,8 +412,8 @@ setup:
         # last command and head succeeds regardless. That is too subtle to rely
         # on: anyone adding `set -o pipefail` here would turn this block into a
         # failure path, which is exactly what soft() exists to prevent.
-        node --version || true
-        pnpm --version || true
+        su -s /bin/sh agent -c 'node --version' || true
+        su -s /bin/sh agent -c 'pnpm --version' || true
         gh --version 2>/dev/null | head -1 || true
         trufflehog --version 2>&1 | head -1 || true
 
