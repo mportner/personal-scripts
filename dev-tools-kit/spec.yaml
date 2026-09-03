@@ -504,7 +504,17 @@ setup:
           # PNPM_CONFIG_VIRTUAL_STORE_TYPE keep pnpm's output off the workspace
           # without mounting anything, so there is nothing left to fail
           # silently and nothing for a mid-session worktree to miss.
-          mkdir -p /var/lib/pnpm/store
+          # The recursive pass, for the first start after creation and for a
+          # volume that was replaced between starts.
           if [ "$(stat -c %U /var/lib/pnpm)" != agent ]; then
             chown -R agent:agent /var/lib/pnpm
           fi
+
+          # Then the store directory on its own, unconditionally. The guard
+          # above reads only the volume root, so a store directory that is
+          # missing under an already-owned root gets recreated by root here and
+          # then skipped, leaving the agent unable to write its own store. This
+          # is one chown rather than a walk, so it is cheap enough to run every
+          # time and does not reintroduce what the guard exists to avoid.
+          mkdir -p /var/lib/pnpm/store
+          chown agent:agent /var/lib/pnpm/store

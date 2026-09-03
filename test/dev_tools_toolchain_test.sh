@@ -63,6 +63,13 @@ assert_contains "$declared" 'PNPM_CONFIG_VIRTUAL_STORE_TYPE: global' \
 startup="$(sed -n '/^  startup:/,$p' "$SPEC")"  # nested, so not spec_section
 assert_contains "$startup" 'chown -R agent:agent /var/lib/pnpm' \
   "hands the root-owned volume to the agent"
+
+# The recursive pass is guarded on the volume root, so it does not fire when
+# only the store directory beneath it went missing and was recreated by root.
+# That case needs its own unconditional chown or the agent cannot write its
+# store, with nothing to say so.
+assert_contains "$startup" 'chown agent:agent /var/lib/pnpm/store' \
+  "hands the store directory over even when the volume root is already owned"
 assert_contains "$startup" "trap 'exit 0' EXIT" \
   "cannot take the startup chain down with it"
 
