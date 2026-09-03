@@ -687,6 +687,18 @@ printf '%s\n' "$FINDINGS" > "$STATE_FILE"
 # block rather than appending is what makes running it every time safe.
 carry_host_excludes
 
+# Last, and fatal when it fails. Everything above this point is repairable from
+# inside a session; this one is not, and it is the only check here whose
+# subject is the mounted checkout rather than the sandbox. Placed after the
+# worktree preparation on purpose: a worktree is created outside the container
+# and shares the workspace mount, so it is covered by the same answer and there
+# is nothing extra to ask about it.
+#
+# Only project-sandbox runs this. research-sandbox clones into a container
+# volume, so it has no mounted checkout for pnpm to write into and the question
+# does not arise.
+assert_pnpm_isolation
+
 printf '\n'
 step "Attaching"
 

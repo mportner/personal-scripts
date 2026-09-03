@@ -746,6 +746,249 @@ carry_host_excludes() {
   return 0
 }
 
+# --- pnpm is off the workspace mount ----------------------------------------
+
+# The workspace is a virtiofs mount of a checkout that is also used outside the
+# container, and the two run different operating systems, so anything pnpm
+# writes under it is unusable on one side or the other. dev-tools-kit keeps
+# it off there with a volume and two PNPM_CONFIG_ settings, and the failure
+# mode of that arrangement is that it is entirely absent while everything still
+# reports success: creation is clean, attach is clean, and the first sign is an
+# install failing several hundred packages in, or quietly writing a full copy
+# of every package into that checkout.
+#
+# So this is asked before handing over, and the answer gates the attach rather
+# than being printed alongside it. A sandbox without the guarantee is worse
+# than no sandbox: it corrupts node_modules for both sides while looking
+# like it is working, and the previous behaviour of warning and attaching
+# anyway is what let that run for a whole session.
+
+# The volume dev-tools-kit declares, spelled here because the launcher has to
+# check the store landed on it rather than merely somewhere off the workspace.
+# A store on the container's own filesystem passes every other test here and is
+# still wrong: it is not the sized filesystem the kit asks for, and it goes when
+# the container does. test/dev_tools_toolchain_test.sh asserts this matches the
+# path the kit declares, so the two cannot drift apart silently.
+PNPM_VOLUME=/var/lib/pnpm
+
+# The probe, kept addressable rather than inlined so the gathering can be
+# tested without a container. It only collects facts; pnpm_isolation_verdict
+# below decides what they mean, which is the half worth unit testing.
+#
+# Deliberately without set -e and with every failure defaulted: a probe that
+# aborted partway would hand the verdict a short read, and a short read is
+# indistinguishable from a fact it did not like.
+#
+# Single-quoted on purpose: every expansion belongs to the container's shell.
+# WORKSPACE_DIR arrives in its environment, and $$ has to resolve there.
+# shellcheck disable=SC2016
+PNPM_ISOLATION_PROBE_SH='
+ws="${WORKSPACE_DIR:-}"
+# Asked from inside the workspace, because the answers are per project: the
+# pnpm a project pins through packageManager is the one whose settings decide
+# where its install lands, and asking from anywhere else answers for the
+# sandbox baseline instead. That is the case this exists to catch, since a
+# project pinning pnpm 11.22 or older silently ignores virtualStoreType.
+if [ -n "$ws" ]; then cd "$ws" 2>/dev/null || true; fi
+
+# pnpm prints the literal word `undefined` for a setting it has no value for,
+# which includes one the running version has never heard of. Passed through it
+# would read as a value.
+get() {
+  v="$(pnpm config get "$1" 2>/dev/null)" || v=""
+  if [ "$v" = undefined ]; then v=""; fi
+  printf "%s" "$v"
+}
+
+store="$(get store-dir)"
+vtype="$(get virtual-store-type)"
+
+# Created rather than reported missing: the store does not exist until the
+# first install, so every freshly created sandbox would fail a check that
+# insisted on finding one, and the hardlink probe below has to write in it.
+if [ -n "$store" ]; then mkdir -p "$store" 2>/dev/null || true; fi
+
+# The half a path check cannot do: a path can be right while the volume under
+# it is unwritable, because the startup chown is allowed to fail quietly. Done
+# inside the store, so it needs no write anywhere near the checkout.
+#
+# It does not prove the store and the virtual store are on one filesystem,
+# which is the other way hardlinking fails. Nothing here needs it to: with
+# virtualStoreType global the virtual store lives inside the store, so the two
+# are on one filesystem by construction, and the vtype check below is what
+# catches the case where they are not.
+link=no
+d="$store/.isolation-probe.$$"
+if [ -n "$store" ] &&
+   mkdir -p "$d" 2>/dev/null &&
+   : > "$d/a" 2>/dev/null &&
+   ln "$d/a" "$d/b" 2>/dev/null; then
+  link=yes
+fi
+if [ -n "$store" ]; then rm -rf "$d" 2>/dev/null || true; fi
+
+printf "workspace=%s\n" "$ws"
+printf "store=%s\n" "$store"
+printf "vtype=%s\n" "$vtype"
+printf "wsdev=%s\n" "$(stat -c %d "$ws" 2>/dev/null || printf "")"
+# The volume, and the container filesystem to compare it against. An empty
+# voldev means the path is not there at all, which is what a sandbox created
+# before the volume was declared looks like: volumes are settled at creation,
+# so an older one never grows it. voldev equal to rootdev means the path
+# exists and is an ordinary directory rather than a mount.
+#
+# Both are needed because neither the store path nor the workspace device can
+# tell those cases apart. Measured in a sandbox created before the volume
+# existed: root=29, workspace=54, and /var/lib/pnpm absent entirely.
+printf "voldev=%s\n" "$(stat -c %d "'"$PNPM_VOLUME"'" 2>/dev/null || printf "")"
+printf "rootdev=%s\n" "$(stat -c %d / 2>/dev/null || printf "")"
+printf "hardlink=%s\n" "$link"
+'
+
+# What the probe's facts mean. Prints nothing and returns 0 when pnpm's output
+# is off the workspace mount; prints one line per fault and returns 1 otherwise.
+#
+# Every fault is reported, not just the first. The caller dies on this, so
+# stopping at one would make the user fix, recreate, re-run and discover the
+# next one, once per fault.
+pnpm_isolation_verdict() {
+  # $1 the probe's output
+  local line key value found sep
+  local workspace="" store="" vtype="" wsdev="" hardlink=""
+  local voldev="" rootdev=""
+  while IFS= read -r line; do
+    key="${line%%=*}"
+    value="${line#*=}"
+    case "$key" in
+      workspace) workspace="$value" ;;
+      store)     store="$value" ;;
+      vtype)     vtype="$value" ;;
+      wsdev)     wsdev="$value" ;;
+      voldev)    voldev="$value" ;;
+      rootdev)   rootdev="$value" ;;
+      hardlink)  hardlink="$value" ;;
+    esac
+  done <<< "$1"
+
+  # Nothing was learned, so nothing below is worth saying. Everything else
+  # here needs a store path to mean anything, and a pnpm that could not be run
+  # at all also reports no virtual store and no hardlink: printing those as
+  # three findings buries the one that explains them. Observed against a
+  # sandbox whose pnpm was failing to start.
+  if [[ -z "$store" ]]; then
+    printf '%s\n' \
+      "pnpm did not answer when asked where its store is, so there is no telling where an install would write."
+    return 1
+  fi
+
+  found=""
+  sep=""
+
+  # Where the store landed. The workspace case gets its own message because it
+  # is the one with teeth: the store is being written straight into the
+  # checkout, and "not on the volume" would undersell that.
+  if [[ -n "$workspace" && "$store" == "$workspace"/* ]]; then
+    found="${found}${sep}The pnpm store is inside the workspace ($store)."
+    sep=$'\n'
+  elif [[ "$store" != "$PNPM_VOLUME" && "$store" != "$PNPM_VOLUME"/* ]]; then
+    found="${found}${sep}The pnpm store is not on the $PNPM_VOLUME volume ($store)."
+    sep=$'\n'
+  fi
+
+  # Whether the volume is a volume. Checked separately from the path above,
+  # because the path can read perfectly while nothing is mounted under it.
+  #
+  # This is what catches a sandbox created before the volume was declared, and
+  # it took a correction to get right: an earlier version compared the store's
+  # device against the workspace's, on the theory that they would match. They
+  # do not. The workspace is virtiofs and the container filesystem is not, so
+  # that comparison passes for exactly the sandbox it was meant to reject.
+  # Measured in one created before the volume existed: root 29, workspace 54,
+  # and $PNPM_VOLUME not present at all.
+  if [[ -z "$voldev" ]]; then
+    found="${found}${sep}There is no $PNPM_VOLUME volume in this sandbox."
+    sep=$'\n'
+  elif [[ -n "$rootdev" && "$voldev" == "$rootdev" ]]; then
+    found="${found}${sep}$PNPM_VOLUME is a plain directory on the container filesystem, not a volume."
+    sep=$'\n'
+  elif [[ -n "$wsdev" && "$voldev" == "$wsdev" ]]; then
+    found="${found}${sep}$PNPM_VOLUME is on the same filesystem as the workspace."
+    sep=$'\n'
+  fi
+
+  # The quiet one, and the reason this check exists at all. virtualStoreType
+  # arrived in pnpm 11.23; a project pinning anything older ignores it without
+  # a word, leaving the virtual store in the tree while the store above it has
+  # already moved. pnpm then cannot hardlink between the two and writes a full
+  # copy of every package into the checkout.
+  if [[ "$vtype" != global ]]; then
+    found="${found}${sep}The pnpm virtual store is not global, so it stays in the project tree."
+    sep=$'\n'
+  fi
+
+  if [[ "$hardlink" != yes ]]; then
+    found="${found}${sep}The pnpm store cannot be written and hardlinked in."
+    sep=$'\n'
+  fi
+
+  [[ -z "$found" ]] && return 0
+  printf '%s\n' "$found"
+  return 1
+}
+
+# Asks the sandbox, and refuses to attach if the answer is wrong.
+#
+# `-w /` rather than the default working directory: sbx maps the caller's own
+# into the container, which fails outright when the launcher is run from a path
+# the container does not have. The probe cds to the workspace itself, so it
+# does not care where it starts.
+#
+# Costs one `sbx exec` and two pnpm invocations, measured at 460ms, plus a mise
+# download the first time a project pins a version the sandbox has not seen.
+# That download is work the agent's first command would do anyway.
+assert_pnpm_isolation() {
+  local out verdict
+  printf '\n'
+  step "Checking pnpm is off the workspace mount"
+
+  out="$(sbx exec -w / "$NAME" -- sh -c "$PNPM_ISOLATION_PROBE_SH" 2>/dev/null)" || out=""
+  if [[ -z "$out" ]]; then
+    die \
+"could not check whether pnpm writes into your checkout: the probe returned
+nothing, so $NAME may not be running or may not have the dev-tools kit.
+Attach without this launcher if you know what you are doing:
+  sbx run --name $NAME"
+  fi
+
+  if verdict="$(pnpm_isolation_verdict "$out")"; then
+    note "pnpm      store on $(printf '%s\n' "$out" | sed -n 's/^store=//p')"
+    note "          virtual store global, hardlinks work"
+    return 0
+  fi
+
+  # Everything the user needs to act is in here, because this is the last thing
+  # they see: what is wrong, what it would have cost, and the one command that
+  # fixes it. A sandbox predating the volume cannot be repaired in place, since
+  # volumes and startup commands are both fixed at creation.
+  die \
+"pnpm in $NAME would write into your checkout.
+
+$verdict
+The workspace is a mount of your checkout, and the sandbox runs a different
+operating system, so an install here leaves node_modules unusable on one side
+or the other. Not attaching.
+
+Most often this is a sandbox created before the pnpm volume existed, which
+cannot be fixed in place: volumes and startup commands are both settled at
+creation. Recreate it:
+  $PROG --destroy $NAME
+  $PROG
+
+If a project pins pnpm older than 11.23, raise its packageManager instead:
+that version is where the virtual store setting arrived, and below it the
+setting is ignored without a word."
+}
+
 # --- the worktree flag ------------------------------------------------------
 
 # WORKTREE_NAME_REASON, read below, is the sentence explaining why the calling

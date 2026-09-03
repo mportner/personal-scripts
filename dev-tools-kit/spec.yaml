@@ -88,6 +88,39 @@ agentInstructions:
     branch as green on the strength of a local run. If you genuinely cannot
     read CI, say so plainly in those words.
 
+    # pnpm in this sandbox
+
+    ## The first `pnpm install` on a checkout fails. Run it again.
+
+    On a checkout that has no `node_modules` yet, the first install fails
+    partway through linking, reporting `ENOTDIR` or `ENOENT` from
+    `mkdir '<workspace>/node_modules'` on a directory whose parent plainly
+    exists, and which a plain `mkdir` in the same shell creates without
+    complaint. pnpm exits non-zero.
+
+    Run `pnpm install` a second time. It succeeds. Everything after it is
+    unaffected: repeat installs, adding a dependency and native builds all run
+    clean.
+
+    This is the workspace mount, not the project, not the lockfile and not the
+    toolchain. Measured on one project, wiping `node_modules` and the store
+    before each run: 5 of 5 first installs failed on the mount, and the same
+    project copied off the mount failed 0 of 5. Every retry succeeded.
+
+    So do not go looking through the filesystem for an explanation, do not
+    conclude the install is broken or the lockfile is bad on the strength of
+    the first failure, and do not report it to the user as a problem with
+    their project. Retry once, then carry on. If the second run fails too,
+    that is a real failure and worth reading.
+
+    ## Where pnpm writes, and why you will not find it in the tree
+
+    The content-addressable store and the virtual store are both on a volume
+    at `/var/lib/pnpm`, off the workspace. `node_modules` in the project holds
+    symlinks into that volume rather than real package directories, so a
+    package's files are not under the checkout and `find` will not turn them
+    up there. That is correct, not a broken install.
+
 # One sized volume holding everything pnpm generates. The workspace is a
 # virtiofs mount of the host checkout, so anything pnpm writes under it is
 # written into a macOS tree by a Linux install: the darwin binaries are
@@ -175,6 +208,55 @@ environment:
     # a one-line change in each of those repositories, not something this kit
     # can do, because the pin is what pnpm obeys.
     PNPM_CONFIG_VIRTUAL_STORE_TYPE: global
+
+    # --- extra supply-chain hardening -------------------------------------
+    #
+    # Lifted from natesilva/sbx-kit-npm-pnpm-hardening, which covers the same
+    # ground as the policy this kit already carries and covers three things
+    # more. The kit itself is deliberately not adopted: it configures an empty
+    # build allowlist, which is what produces the broken @pnpm/exe placeholder
+    # and would also stop sqlite3 compiling, and it installs no pnpm at all.
+    #
+    # These are set as environment variables rather than written into
+    # ~/.config/pnpm/config.yaml and ~/.npmrc, and that is load-bearing rather
+    # than a filing decision. Two reasons, the first measured against pnpm
+    # 11.24.0 and npm 11:
+    #
+    #   1. A project's own config outranks a user-level one. A
+    #      pnpm-workspace.yaml declaring `registry: https://stray.example/`
+    #      wins over the global config.yaml, so a setting written there would
+    #      not survive the one thing it exists to survive. PNPM_CONFIG_ and
+    #      NPM_CONFIG_ outrank the project file, which is the whole point of
+    #      pinning a registry.
+    #   2. Those two files are mirrors of a policy maintained outside this
+    #      repository. Keeping them unmodified is what lets one diff show
+    #      whether they are still in step with it; sandbox-only settings would
+    #      end that.
+    #
+    # All three pin a default rather than change behaviour. That is the
+    # intent: what they defend against is a config the sandbox did not write
+    # turning the default off.
+
+    # A sandbox should not be redirectable to another registry by a stray
+    # config in a dependency tree. Scoped registries (@scope:registry) are
+    # separate keys and are not affected, so a project resolving one scope
+    # elsewhere still works; a project whose entire registry is private does
+    # not, and would need this reconsidered.
+    PNPM_CONFIG_REGISTRY: https://registry.npmjs.org/
+    NPM_CONFIG_REGISTRY: https://registry.npmjs.org/
+
+    # Refuse to downgrade the transport. Cheap, and nothing here has a reason
+    # to talk to a registry over anything else.
+    PNPM_CONFIG_STRICT_SSL: "true"
+    NPM_CONFIG_STRICT_SSL: "true"
+
+    # Re-check the content-addressable store on every install. This is the one
+    # that earns its place rather than merely being free: the store is now a
+    # long-lived volume shared by every project in the sandbox, so a corrupted
+    # or tampered entry stops being one install's problem and persists across
+    # all of them until the volume is dropped. npm has no equivalent because it
+    # has no such store.
+    PNPM_CONFIG_VERIFY_STORE_INTEGRITY: "true"
 
     # Nothing here should ever act on an npm self-update notice.
     NPM_CONFIG_UPDATE_NOTIFIER: "false"
@@ -505,17 +587,172 @@ setup:
           # PNPM_CONFIG_VIRTUAL_STORE_TYPE keep pnpm's output off the workspace
           # without mounting anything, so there is nothing left to fail
           # silently and nothing for a mid-session worktree to miss.
-          # The recursive pass, for the first start after creation and for a
-          # volume that was replaced between starts.
-          if [ "$(stat -c %U /var/lib/pnpm)" != agent ]; then
-            chown -R agent:agent /var/lib/pnpm
+          # The whole block is guarded on the volume being there, and that
+          # guard is load-bearing rather than defensive. Without it the stat
+          # below fails on a sandbox that has no volume, the chown after it
+          # fails too, and set -e takes the command out through the trap
+          # before the check further down can report anything. So the one
+          # sandbox most needing to be told was the one told nothing.
+          # Verified by building a kit with the volumes block removed.
+          #
+          # Skipping rather than creating the directory is also the honest
+          # answer: fabricating /var/lib/pnpm here would make the sandbox look
+          # like it had a volume to everything downstream.
+          if [ -d /var/lib/pnpm ]; then
+            # The recursive pass, for the first start after creation and for a
+            # volume that was replaced between starts.
+            if [ "$(stat -c %U /var/lib/pnpm)" != agent ]; then
+              chown -R agent:agent /var/lib/pnpm
+            fi
+
+            # Then the store directory on its own, unconditionally. The guard
+            # above reads only the volume root, so a store directory that is
+            # missing under an already-owned root gets recreated by root here
+            # and then skipped, leaving the agent unable to write its own
+            # store. This is one chown rather than a walk, so it is cheap
+            # enough to run every time and does not reintroduce what the guard
+            # exists to avoid.
+            mkdir -p /var/lib/pnpm/store
+            chown agent:agent /var/lib/pnpm/store
           fi
 
-          # Then the store directory on its own, unconditionally. The guard
-          # above reads only the volume root, so a store directory that is
-          # missing under an already-owned root gets recreated by root here and
-          # then skipped, leaving the agent unable to write its own store. This
-          # is one chown rather than a walk, so it is cheap enough to run every
-          # time and does not reintroduce what the guard exists to avoid.
-          mkdir -p /var/lib/pnpm/store
-          chown agent:agent /var/lib/pnpm/store
+          # --- then say so if it did not work ---------------------------
+          # The trap above is correct and stays, so nothing here can abort.
+          # That is exactly the problem: every failure on this path is
+          # swallowed, and a sandbox whose isolation is entirely absent looks
+          # identical to a working one until an install writes a Linux tree
+          # into the mounted checkout.
+          #
+          # What this cannot do is refuse. What it can do is put the fact
+          # where the agent will read it. project-sandbox asks the same
+          # question before attaching and does refuse; this covers the
+          # sandbox reached any other way, `sbx run` included.
+          #
+          # Deliberately only the cheap filesystem checks. Asking pnpm itself
+          # would resolve the project's pinned version and can trigger a
+          # download, which is not something to do on every container start.
+          # Covers both halves the chowns above are for: writability, and
+          # hardlinking, which is what pnpm does between the store and the
+          # virtual store and what silently degrades to full copies.
+          #
+          # A function rather than another arm of the chain below: a lint
+          # directive is only valid in front of a complete compound command,
+          # never in front of an elif, and this needs the one underneath.
+          # Single-quoted on purpose: $$ and $d belong to the shell su starts,
+          # not to this one.
+          # shellcheck disable=SC2016
+          store_is_usable() {
+            su -s /bin/sh agent -c '
+              set -e
+              d="/var/lib/pnpm/store/.startup-probe.$$"
+              mkdir -p "$d"
+              : > "$d/a"
+              ln "$d/a" "$d/b"
+              rm -rf "$d"
+            ' 2>/dev/null
+          }
+
+          # Compared against the container's own filesystem, not against the
+          # workspace, and that distinction is the whole check. A sandbox
+          # created before the volume was declared never grows one, because
+          # volumes are settled at creation; what it has instead is a plain
+          # directory, made by the mkdir above. That directory is on the
+          # container filesystem, the workspace is virtiofs, and the two
+          # differ, so a workspace comparison passes for exactly the sandbox
+          # it is meant to reject. Verified by building a kit with the volumes
+          # block removed: the workspace comparison reported no fault, the
+          # root comparison reports one.
+          #
+          # Assigned before they are compared rather than inside the test. An
+          # `[ -n "$x" ] && x=...` here returns non-zero when the guard fails,
+          # which under set -e and the trap above would exit 0 and silently
+          # skip everything below.
+          voldev="$(stat -c %d /var/lib/pnpm 2>/dev/null || true)"
+          rootdev="$(stat -c %d / 2>/dev/null || true)"
+          wsdev=""
+          if [ -n "${WORKSPACE_DIR:-}" ]; then
+            wsdev="$(stat -c %d "$WORKSPACE_DIR" 2>/dev/null || true)"
+          fi
+
+          fault=""
+          if [ -z "$voldev" ]; then
+            fault="there is no /var/lib/pnpm volume in this sandbox"
+          elif [ -n "$rootdev" ] && [ "$voldev" = "$rootdev" ]; then
+            fault="/var/lib/pnpm is a plain directory on the container filesystem, not a volume"
+          elif [ -n "$wsdev" ] && [ "$voldev" = "$wsdev" ]; then
+            fault="/var/lib/pnpm is on the same filesystem as the workspace"
+          elif ! store_is_usable; then
+            fault="the agent cannot write and hardlink in /var/lib/pnpm/store"
+          fi
+
+          # Written into the file sbx generates from agentInstructions, which
+          # the workspace CLAUDE.md already points the agent at, rather than a
+          # log nobody opens. Prepended, so it is the first thing read rather
+          # than a footnote under the GitHub notes.
+          #
+          # Between markers and rewritten in place, like the git excludes
+          # carry: this runs on every container start, so appending would
+          # stack a block per start, and a fault that cleared has to take its
+          # warning away with it.
+          ctx=""
+          if [ -n "${WORKSPACE_DIR:-}" ]; then
+            ctx="$(dirname "$WORKSPACE_DIR")/kits-agent-context/dev-tools.md"
+          fi
+          # Created rather than skipped when it is not there yet. The guard
+          # used to be `[ -f "$ctx" ]`, which meant a failed guarantee went
+          # unrecorded entirely if sbx had not written the file by the time
+          # this ran. Losing the warning to an ordering question is the exact
+          # silence this block exists to end, so a fault writes the file
+          # itself. Only on a fault: with nothing to say, an absent file is
+          # left absent rather than created empty.
+          if [ -n "$ctx" ] && [ -n "$fault" ] && [ ! -f "$ctx" ]; then
+            mkdir -p "$(dirname "$ctx")" 2>/dev/null || true
+            : > "$ctx" 2>/dev/null || true
+          fi
+          if [ -n "$ctx" ] && [ -f "$ctx" ]; then
+            begin="<!-- dev-tools: isolation status -->"
+            end="<!-- /dev-tools: isolation status -->"
+            tmp="$ctx.dev-tools.$$"
+            trap 'rm -f "$tmp"; exit 0' EXIT
+
+            if [ -n "$fault" ]; then
+              # printf rather than a heredoc, which cannot be used here: this
+              # whole command is a YAML block scalar, so a heredoc body at
+              # column 0 would end the scalar, and <<- strips only tabs.
+              #
+              # The backticks below are markdown code spans in the text being
+              # written, not command substitution.
+              # shellcheck disable=SC2016
+              {
+                printf '%s\n' "$begin"
+                printf '# STOP: pnpm is not isolated\n\n'
+                printf 'At container start, %s.\n\n' "$fault"
+                printf 'The workspace is a mount of a checkout that is also used from outside\n'
+                printf 'this sandbox, and the two run different operating systems. So `pnpm\n'
+                printf 'install` here writes binaries that do not run out there, over binaries\n'
+                printf 'that do not run in here, and the damage is not confined to this sandbox.\n\n'
+                printf 'Do not run `pnpm install`, `pnpm add`, or anything that would. Tell the\n'
+                printf 'user the sandbox has to be recreated (`project-sandbox --destroy <name>`,\n'
+                printf 'then attach again); the volume is settled at creation, so this cannot be\n'
+                printf 'repaired from in here and is not something to work around.\n'
+                printf '%s\n\n' "$end"
+              } > "$tmp"
+            else
+              : > "$tmp"
+            fi
+
+            # Everything except a block a previous start left. A shell loop
+            # rather than sed, because the markers hold characters sed would
+            # read as syntax and the file is small.
+            skip=0
+            while IFS= read -r line || [ -n "$line" ]; do
+              if [ "$line" = "$begin" ]; then skip=1; continue; fi
+              if [ "$line" = "$end" ]; then skip=0; continue; fi
+              if [ "$skip" = 0 ]; then printf '%s\n' "$line"; fi
+            done < "$ctx" >> "$tmp"
+
+            # Same directory, so this is a rename: the agent never reads a
+            # half-written file.
+            mv "$tmp" "$ctx"
+            chown agent:agent "$ctx" 2>/dev/null || true
+          fi

@@ -17,6 +17,17 @@
 # whose absence brings the old failure back without any error being raised.
 # Sourced by test/run.sh.
 
+# Sourced for PNPM_VOLUME, which the volume-parity assertion below compares
+# against the path the kit declares. output.sh comes first because the launcher
+# library calls die() at load time on nothing, but depends on it being defined.
+PROG=personal-scripts-tests
+DRY_RUN=0
+NAME=test-sandbox
+# shellcheck source=../lib/output.sh
+source "$REPO_DIR/lib/output.sh"
+# shellcheck source=../lib/sandbox-launcher.sh
+source "$REPO_DIR/lib/sandbox-launcher.sh"
+
 SPEC="$REPO_DIR/dev-tools-kit/spec.yaml"
 spec="$(cat "$SPEC")"
 
@@ -42,6 +53,15 @@ assert_contains "$volume_block" 'path: /var/lib/pnpm' "declares the pnpm volume"
 # volumes altogether.
 assert_contains "$volume_block" 'size:' "gives the volume an explicit size"
 
+# The launcher refuses to attach when pnpm's store is not on this volume, so it
+# has to name the same path the kit declares. Two spellings of one path, in two
+# files that are edited for different reasons: moving the volume without moving
+# the check would make every sandbox fail the preflight, and the failure would
+# read as a broken sandbox rather than a stale constant.
+spec_volume="$(printf '%s\n' "$volume_block" | sed -n 's|^ *- path: *||p')"
+assert_equals "$spec_volume" "$PNPM_VOLUME" \
+  "the launcher's preflight checks the volume the kit actually declares"
+
 # --- pnpm pointed at it -------------------------------------------------------
 
 # pnpm 11 reads pnpm_config_* / PNPM_CONFIG_*. The npm_config_* spelling is
@@ -61,6 +81,45 @@ assert_not_contains "$declared" 'npm_config_store_dir' \
 # hardlink from a store on another filesystem: it copies every package instead.
 assert_contains "$declared" 'PNPM_CONFIG_VIRTUAL_STORE_TYPE: global' \
   "keeps the virtual store off the workspace mount"
+
+# --- hardening that a project config must not be able to undo -----------------
+
+# These three are environment variables rather than lines in the two config
+# files this kit ships, and that placement is the whole point rather than a
+# filing preference: a project's own pnpm-workspace.yaml or .npmrc outranks a
+# user-level config file, so the same settings written there would lose to the
+# one thing they exist to beat. Verified against pnpm 11.24.0 and npm 11: with
+# a stray `registry: https://stray.example/` in a project's pnpm-workspace.yaml,
+# the config file loses and the environment variable wins.
+assert_contains "$declared" 'PNPM_CONFIG_REGISTRY: https://registry.npmjs.org/' \
+  "pins the registry where a project config cannot redirect it"
+assert_contains "$declared" 'NPM_CONFIG_REGISTRY: https://registry.npmjs.org/' \
+  "and does the same for npm"
+assert_contains "$declared" 'PNPM_CONFIG_STRICT_SSL: "true"' \
+  "refuses to downgrade the transport"
+assert_contains "$declared" 'NPM_CONFIG_STRICT_SSL: "true"' \
+  "and does the same for npm"
+
+# The store is a long-lived volume shared by every project in the sandbox now,
+# so a corrupted entry persists across all of them rather than spoiling one
+# install. That is what makes this one worth setting rather than merely free.
+assert_contains "$declared" 'PNPM_CONFIG_VERIFY_STORE_INTEGRITY: "true"' \
+  "re-checks the shared store on every install"
+
+# The other half of the same decision, and the half a reader would undo first.
+# Moving any of the three into these files would look tidier and would quietly
+# stop working, because a project config outranks them there.
+npmrc="$(grep -vE '^[[:space:]]*#' "$REPO_DIR/dev-tools-kit/files/home/.npmrc" || true)"
+pnpm_conf="$(grep -vE '^[[:space:]]*#' \
+  "$REPO_DIR/dev-tools-kit/files/home/.config/pnpm/config.yaml" || true)"
+assert_not_contains "$npmrc" 'registry' \
+  "the npm config file does not carry the registry pin it would lose with"
+assert_not_contains "$npmrc" 'strict-ssl' \
+  "nor the TLS setting"
+assert_not_contains "$pnpm_conf" 'registry' \
+  "the pnpm config file does not carry the registry pin either"
+assert_not_contains "$pnpm_conf" 'verifyStoreIntegrity' \
+  "nor store re-verification"
 
 # --- the volume is writable ---------------------------------------------------
 

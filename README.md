@@ -279,11 +279,16 @@ what stops pnpm's own self-management fetching a second, unpinned pnpm from the
 npm registry, which shipped a placeholder binary and broke every pnpm call in
 the project.
 
-It also carries the host's supply-chain policy in (`minimumReleaseAge`,
-`minimumReleaseAgeStrict`, `blockExoticSubdeps`) rather than leaving it to
-whichever repositories happen to commit those settings, and keeps everything
-pnpm generates on a container volume so a Linux install stops fighting the
-host's macOS one over the bind mount. See its
+It also carries a supply-chain policy in (`minimumReleaseAge`,
+`minimumReleaseAgeStrict`, `blockExoticSubdeps`, plus a pinned registry, strict
+TLS and store re-verification) rather than leaving it to whichever repositories
+happen to commit those settings, and keeps everything pnpm generates on a
+container volume so a Linux install stops fighting a macOS one over the bind
+mount.
+
+Because that last guarantee used to be able to fail silently, `project-sandbox`
+now probes for it and refuses to attach when it is absent, and the kit records
+the same finding where the agent will read it. See its
 [README](dev-tools-kit/README.md).
 
 Adds about 30s to sandbox creation, most of it Playwright's system libraries;
